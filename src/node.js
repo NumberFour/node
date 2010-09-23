@@ -38,7 +38,7 @@ process.evalcx = function () {
     writeError(evalcxMsg =
       "process.evalcx is deprecated. Use Script.runInNewContext instead.\n");
   }
-  return process.binding('evals').Script
+  return process.binding('evals').Skript
     .runInNewContext.apply(null, arguments);
 };
 
@@ -619,7 +619,7 @@ var module = (function () {
     var dirname = path.dirname(filename);
 
     if (contextLoad) {
-      if (!Script) Script = process.binding('evals').Script;
+      if (!Script) Script = process.binding('evals').Skript;
 
       if (self.id !== ".") {
         debug('load submodule');
