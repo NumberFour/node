@@ -49,7 +49,12 @@
 
 using namespace v8;
 
+# ifdef __APPLE__
+# include <crt_externs.h>
+# define environ (*_NSGetEnviron())
+# else
 extern char **environ;
+# endif
 
 namespace node {
 
@@ -68,10 +73,13 @@ static Persistent<String> listeners_symbol;
 static Persistent<String> uncaught_exception_symbol;
 static Persistent<String> emit_symbol;
 
+
+static char *eval_string = NULL;
 static int option_end_index = 0;
 static bool use_debug_agent = false;
 static bool debug_wait_connect = false;
 static int debug_port=5858;
+static int max_stack_size = 0;
 
 static ev_check check_tick_watcher;
 static ev_prepare prepare_tick_watcher;
@@ -1512,6 +1520,7 @@ static Handle<Value> Binding(const Arguments& args) {
     exports->Set(String::New("tcp"),          String::New(native_tcp));
     exports->Set(String::New("url"),          String::New(native_url));
     exports->Set(String::New("utils"),        String::New(native_utils));
+    exports->Set(String::New("util"),         String::New(native_sys));
     exports->Set(String::New("path"),         String::New(native_path));
     exports->Set(String::New("string_decoder"), String::New(native_string_decoder));
     binding_cache->Set(module, exports);
@@ -1611,6 +1620,11 @@ static void Load(int argc, char *argv[]) {
   process->Set(String::NewSymbol("env"), env);
 
   process->Set(String::NewSymbol("pid"), Integer::New(getpid()));
+
+  // -e, --eval
+  if (eval_string) {
+    process->Set(String::NewSymbol("_eval"), String::New(eval_string));
+  }
 
   size_t size = 2*PATH_MAX;
   char execPath[size];
@@ -1724,21 +1738,23 @@ static void ParseDebugOpt(const char* arg) {
 static void PrintHelp() {
   printf("Usage: node [options] script.js [arguments] \n"
          "Options:\n"
-         "  -v, --version      print node's version\n"
-         "  --debug[=port]     enable remote debugging via given TCP port\n"
-         "                     without stopping the execution\n"
-         "  --debug-brk[=port] as above, but break in script.js and\n"
-         "                     wait for remote debugger to connect\n"
-         "  --v8-options       print v8 command line options\n"
-         "  --vars             print various compiled-in variables\n"
+         "  -v, --version        print node's version\n"
+         "  --debug[=port]       enable remote debugging via given TCP port\n"
+         "                       without stopping the execution\n"
+         "  --debug-brk[=port]   as above, but break in script.js and\n"
+         "                       wait for remote debugger to connect\n"
+         "  --v8-options         print v8 command line options\n"
+         "  --vars               print various compiled-in variables\n"
+         "  --max-stack-size=val set max v8 stack size (bytes)\n"
          "\n"
          "Enviromental variables:\n"
-         "NODE_PATH            ':'-separated list of directories\n"
-         "                     prefixed to the module search path,\n"
-         "                     require.paths.\n"
-         "NODE_DEBUG           Print additional debugging output.\n"
-         "NODE_MODULE_CONTEXTS Set to 1 to load modules in their own\n"
-         "                     global contexts.\n"
+         "NODE_PATH              ':'-separated list of directories\n"
+         "                       prefixed to the module search path,\n"
+         "                       require.paths.\n"
+         "NODE_DEBUG             Print additional debugging output.\n"
+         "NODE_MODULE_CONTEXTS   Set to 1 to load modules in their own\n"
+         "                       global contexts.\n"
+         "NODE_DISABLE_COLORS  Set to 1 to disable colors in the REPL\n"
          "\n"
          "Documentation can be found at http://nodejs.org/api.html"
          " or with 'man node'\n");
@@ -1761,9 +1777,21 @@ static void ParseArgs(int *argc, char **argv) {
       printf("NODE_PREFIX: %s\n", NODE_PREFIX);
       printf("NODE_CFLAGS: %s\n", NODE_CFLAGS);
       exit(0);
+    } else if (strstr(arg, "--max-stack-size=") == arg) {
+      const char *p = 0;
+      p = 1 + strchr(arg, '=');
+      max_stack_size = atoi(p);
+      argv[i] = const_cast<char*>("");
     } else if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0) {
       PrintHelp();
       exit(0);
+    } else if (strcmp(arg, "--eval") == 0 || strcmp(arg, "-e") == 0) {
+      if (*argc <= i + 1) {
+        fprintf(stderr, "Error: --eval requires an argument\n");
+        exit(1);
+      }
+      argv[i] = const_cast<char*>("");
+      eval_string = argv[++i];
     } else if (strcmp(arg, "--v8-options") == 0) {
       argv[i] = const_cast<char*>("--help");
     } else if (argv[i][0] != '-') {
@@ -1772,6 +1800,21 @@ static void ParseArgs(int *argc, char **argv) {
   }
 
   option_end_index = i;
+}
+
+
+static void SignalExit(int signal) {
+  exit(1);
+}
+
+
+static int RegisterSignalHandler(int signal, void (*handler)(int)) {
+  struct sigaction sa;
+
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_handler = handler;
+  sigfillset(&sa.sa_mask);
+  return sigaction(signal, &sa, NULL);
 }
 
 
@@ -1805,13 +1848,26 @@ int main(int argc, char *argv[]) {
     v8argv[node::option_end_index] = const_cast<char*>("--expose_debug_as");
     v8argv[node::option_end_index + 1] = const_cast<char*>("v8debug");
   }
+
+  // For the normal stack which moves from high to low addresses when frames
+  // are pushed, we can compute the limit as stack_size bytes below the
+  // the address of a stack variable (e.g. &stack_var) as an approximation
+  // of the start of the stack (we're assuming that we haven't pushed a lot
+  // of frames yet).
+  if (node::max_stack_size != 0) {
+    uint32_t stack_var;
+    ResourceConstraints constraints;
+
+    uint32_t *stack_limit = &stack_var - (node::max_stack_size / sizeof(uint32_t));
+    constraints.set_stack_limit(stack_limit);
+    SetResourceConstraints(&constraints); // Must be done before V8::Initialize
+  }
   V8::SetFlagsFromCommandLine(&v8argc, v8argv, false);
 
   // Ignore SIGPIPE
-  struct sigaction sa;
-  bzero(&sa, sizeof(sa));
-  sa.sa_handler = SIG_IGN;
-  sigaction(SIGPIPE, &sa, NULL);
+  node::RegisterSignalHandler(SIGPIPE, SIG_IGN);
+  node::RegisterSignalHandler(SIGINT, node::SignalExit);
+  node::RegisterSignalHandler(SIGTERM, node::SignalExit);
 
 
   // Initialize the default ev loop.

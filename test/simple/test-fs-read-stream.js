@@ -60,9 +60,8 @@ file2.destroy(function(err) {
   callbacks.destroy++;
 });
 
-var file3 = fs.createReadStream(fn);
+var file3 = fs.createReadStream(fn, {encoding: 'utf8'});
 file3.length = 0;
-file3.setEncoding('utf8');
 file3.addListener('data', function(data) {
   assert.equal("string", typeof(data));
   file3.length += data.length;
@@ -110,3 +109,14 @@ try {
 } catch(e) {
   assert.equal(e.message, 'Both start and end are needed for range streaming.');
 }
+
+var stream = fs.createReadStream(rangeFile, { start: 0, end: 0 });
+stream.data = '';
+
+stream.on('data', function(chunk){
+  stream.data += chunk;
+});
+
+stream.on('end', function(){
+  assert.equal('x', stream.data);
+});
