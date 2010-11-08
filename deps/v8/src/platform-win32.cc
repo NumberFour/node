@@ -1683,7 +1683,7 @@ bool Win32Socket::Bind(const int port) {
   sockaddr_in addr;
   memset(&addr, 0, sizeof(addr));
   addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_addr.s_addr = htonl(INADDR_ANY);
   addr.sin_port = htons(port);
   int status = bind(socket_,
                     reinterpret_cast<struct sockaddr *>(&addr),

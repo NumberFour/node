@@ -62,7 +62,7 @@ void node::Script::Initialize (Handle<Object> target) {
   Local<FunctionTemplate> t = FunctionTemplate::New(node::Script::New);
   constructor_template = Persistent<FunctionTemplate>::New(t);
   constructor_template->InstanceTemplate()->SetInternalFieldCount(1);
-  constructor_template->SetClassName(String::NewSymbol("Script"));
+  constructor_template->SetClassName(String::NewSymbol("Skript"));
 
   NODE_SET_PROTOTYPE_METHOD(constructor_template, "createContext", node::Script::CreateContext);
   NODE_SET_PROTOTYPE_METHOD(constructor_template, "runInContext", node::Script::RunInContext);
@@ -73,7 +73,7 @@ void node::Script::Initialize (Handle<Object> target) {
   NODE_SET_METHOD(constructor_template, "runInThisContext", node::Script::CompileRunInThisContext);
   NODE_SET_METHOD(constructor_template, "runInNewContext", node::Script::CompileRunInNewContext);
 
-  target->Set(String::NewSymbol("Script"), constructor_template->GetFunction());
+  target->Set(String::NewSymbol("Skript"), constructor_template->GetFunction());
 }
 
 

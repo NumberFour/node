@@ -305,7 +305,7 @@ var module = (function () {
     var dirname = path.dirname(filename);
 
     if (contextLoad) {
-      if (!Script) Script = process.binding('evals').Script;
+      if (!Script) Script = process.binding('evals').Skript;
 
       if (self.id !== ".") {
         debug('load submodule');
