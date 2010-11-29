@@ -13,6 +13,7 @@ class Context : ObjectWrap {
   static void Initialize (v8::Handle<v8::Object> target);
   static v8::Handle<v8::Value> New (const v8::Arguments& args);
 
+  void Destroy();
   v8::Persistent<v8::Context> GetV8Context();
   static v8::Local<v8::Object> NewInstance();
 
@@ -46,6 +47,7 @@ class Script : ObjectWrap {
 
   static v8::Handle<v8::Value> New (const v8::Arguments& args);
   static v8::Handle<v8::Value> CreateContext (const v8::Arguments& arg);
+  static v8::Handle<v8::Value> DestroyContext (const v8::Arguments& arg);
   static v8::Handle<v8::Value> RunInContext (const v8::Arguments& args);
   static v8::Handle<v8::Value> RunInThisContext (const v8::Arguments& args);
   static v8::Handle<v8::Value> RunInNewContext (const v8::Arguments& args);

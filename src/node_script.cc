@@ -37,6 +37,12 @@ node::Context::Context() : ObjectWrap() {
 }
 
 
+void node::Context::Destroy() {
+  context_.Dispose();
+  context_.Clear();
+}
+
+
 node::Context::~Context() {
   context_.Dispose();
 }
@@ -65,10 +71,12 @@ void node::Script::Initialize (Handle<Object> target) {
   constructor_template->SetClassName(String::NewSymbol("Skript"));
 
   NODE_SET_PROTOTYPE_METHOD(constructor_template, "createContext", node::Script::CreateContext);
+  NODE_SET_PROTOTYPE_METHOD(constructor_template, "destroyContext", node::Script::DestroyContext);
   NODE_SET_PROTOTYPE_METHOD(constructor_template, "runInContext", node::Script::RunInContext);
   NODE_SET_PROTOTYPE_METHOD(constructor_template, "runInThisContext", node::Script::RunInThisContext);
   NODE_SET_PROTOTYPE_METHOD(constructor_template, "runInNewContext", node::Script::RunInNewContext);
   NODE_SET_METHOD(constructor_template, "createContext", node::Script::CreateContext);
+  NODE_SET_METHOD(constructor_template, "destroyContext", node::Script::DestroyContext);
   NODE_SET_METHOD(constructor_template, "runInContext", node::Script::CompileRunInContext);
   NODE_SET_METHOD(constructor_template, "runInThisContext", node::Script::CompileRunInThisContext);
   NODE_SET_METHOD(constructor_template, "runInNewContext", node::Script::CompileRunInNewContext);
@@ -118,6 +126,14 @@ Handle<Value> node::Script::CreateContext (const Arguments& args) {
   return scope.Close(context);
 }
 
+Handle<Value> node::Script::DestroyContext (const Arguments& args) {
+  if (args.Length() > 0) {
+    node::Context *ctx = ObjectWrap::Unwrap<node::Context>(args[0]->ToObject());
+    assert(ctx);
+    ctx->Destroy();
+  }
+  return Undefined();
+}
 
 Handle<Value> node::Script::RunInContext (const Arguments& args) {
   return
