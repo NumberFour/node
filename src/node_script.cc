@@ -27,6 +27,7 @@ class WrappedContext : ObjectWrap {
   static void Initialize(Handle<Object> target);
   static Handle<Value> New(const Arguments& args);
 
+  void Destroy();
   Persistent<Context> GetV8Context();
   static Local<Object> NewInstance();
 
@@ -65,6 +66,7 @@ class WrappedScript : ObjectWrap {
 
   static Handle<Value> New(const Arguments& args);
   static Handle<Value> CreateContext(const Arguments& arg);
+  static Handle<Value> DestroyContext(const Arguments& arg);
   static Handle<Value> RunInContext(const Arguments& args);
   static Handle<Value> RunInThisContext(const Arguments& args);
   static Handle<Value> RunInNewContext(const Arguments& args);
@@ -114,6 +116,10 @@ Local<Object> WrappedContext::NewInstance() {
   return context;
 }
 
+void WrappedContext::Destroy() {
+  context_.Dispose();
+  context_.Clear();
+}
 
 Persistent<Context> WrappedContext::GetV8Context() {
   return context_;
@@ -136,6 +142,10 @@ void WrappedScript::Initialize(Handle<Object> target) {
                             WrappedScript::CreateContext);
 
   NODE_SET_PROTOTYPE_METHOD(constructor_template,
+                            "destroyContext",
+                            WrappedScript::DestroyContext);
+
+  NODE_SET_PROTOTYPE_METHOD(constructor_template,
                             "runInContext",
                             WrappedScript::RunInContext);
 
@@ -150,6 +160,10 @@ void WrappedScript::Initialize(Handle<Object> target) {
   NODE_SET_METHOD(constructor_template,
                   "createContext",
                   WrappedScript::CreateContext);
+
+  NODE_SET_METHOD(constructor_template,
+                  "destroyContext",
+                  WrappedScript::DestroyContext);
 
   NODE_SET_METHOD(constructor_template,
                   "runInContext",
@@ -208,6 +222,13 @@ Handle<Value> WrappedScript::CreateContext(const Arguments& args) {
   return scope.Close(context);
 }
 
+Handle<Value> WrappedScript::DestroyContext(const Arguments& args) {
+  if (args.Length() > 0) {
+    WrappedContext *ctx = ObjectWrap::Unwrap<WrappedContext>(args[0]->ToObject());
+    assert(ctx);
+    ctx->Destroy();
+  }
+}
 
 Handle<Value> WrappedScript::RunInContext(const Arguments& args) {
   return
