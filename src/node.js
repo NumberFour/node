@@ -35,9 +35,9 @@
     if (!x) throw new Error(msg || 'assertion error');
   };
 
-  var Script = process.binding('evals').Script;
-  var runInThisContext = Script.runInThisContext;
-  var runInNewContext = Script.runInNewContext;
+  var NodeScript = process.binding('evals').NodeScript;
+  var runInThisContext = NodeScript.runInThisContext;
+  var runInNewContext = NodeScript.runInNewContext;
 
   // lazy loaded.
   var constants;

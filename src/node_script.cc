@@ -135,7 +135,7 @@ void WrappedScript::Initialize(Handle<Object> target) {
   Local<FunctionTemplate> t = FunctionTemplate::New(WrappedScript::New);
   constructor_template = Persistent<FunctionTemplate>::New(t);
   constructor_template->InstanceTemplate()->SetInternalFieldCount(1);
-  constructor_template->SetClassName(String::NewSymbol("Script"));
+  constructor_template->SetClassName(String::NewSymbol("NodeScript"));
 
   NODE_SET_PROTOTYPE_METHOD(constructor_template,
                             "createContext",
@@ -177,7 +177,7 @@ void WrappedScript::Initialize(Handle<Object> target) {
                   "runInNewContext",
                   WrappedScript::CompileRunInNewContext);
 
-  target->Set(String::NewSymbol("Script"),
+  target->Set(String::NewSymbol("NodeScript"),
               constructor_template->GetFunction());
 }
 
