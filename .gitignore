@@ -13,3 +13,5 @@ node_g
 .benchmark_reports
 /.project
 /.cproject
+*~
+\#.*
