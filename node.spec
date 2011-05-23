@@ -1,7 +1,7 @@
 Summary: node.js
 Name: node
 Version: 0.3.4n4
-Release: 1
+Release: 2
 License: XYZ
 Group: n4
 URL: unknown
