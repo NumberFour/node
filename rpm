@@ -14,12 +14,13 @@ set -e
 
 readonly BASEDIR=$(dirname $(readlink -f "$0"))
 readonly RELEASE="$1"
-readonly VERSION=$(git branch | cut -f2 -d' ' | tr -d '-' )
+readonly VERSION=$(git branch | grep '*' | cut -f2 -d' ' | tr -d '-' )
 
 mkdir -p ${BASEDIR}/{SOURCES,SPECS,RPMS,BUILD}
 
 echo "Will package ${VERSION}, release ${RELEASE}."
 git archive --prefix "node-${VERSION}/" HEAD | gzip >"${BASEDIR}/SOURCES/node-${VERSION}.tar.gz"
+echo sed -e "s/@@@VERSION@@@/${VERSION}/g" -e "s/@@@RELEASE@@@/${RELEASE}/g"
 cat ./node.spec | sed -e "s/@@@VERSION@@@/${VERSION}/g" -e "s/@@@RELEASE@@@/${RELEASE}/g" >"${BASEDIR}/SPECS/node.spec"
 
 echo "Build rpms"
