@@ -176,7 +176,7 @@ enum
 enum
 {
   EIO_MCL_CURRENT = 1,
-  EIO_MCL_FUTURE  = 2,
+  EIO_MCL_FUTURE  = 2
 };
 
 /* request priorities */

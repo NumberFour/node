@@ -1,3 +1,24 @@
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 var common = require('../common');
 var assert = require('assert');
 
@@ -15,6 +36,8 @@ var path = require('path');
 var caPem = fs.readFileSync(common.fixturesDir + '/test_ca.pem', 'ascii');
 var certPem = fs.readFileSync(common.fixturesDir + '/test_cert.pem', 'ascii');
 var keyPem = fs.readFileSync(common.fixturesDir + '/test_key.pem', 'ascii');
+var rsaPubPem = fs.readFileSync(common.fixturesDir + '/test_rsa_pubkey.pem', 'ascii');
+var rsaKeyPem = fs.readFileSync(common.fixturesDir + '/test_rsa_privkey.pem', 'ascii');
 
 try {
   var credentials = crypto.createCredentials(
@@ -105,6 +128,25 @@ txt += decipher.final('utf8');
 
 assert.equal(txt, plaintext, 'encryption and decryption');
 
+// encryption and decryption with Base64
+// reported in https://github.com/joyent/node/issues/738
+var plaintext =
+  '32|RmVZZkFUVmpRRkp0TmJaUm56ZU9qcnJkaXNNWVNpTTU*|iXmckfRWZBGWWELw' +
+  'eCBsThSsfUHLeRe0KCsK8ooHgxie0zOINpXxfZi/oNG7uq9JWFVCk70gfzQH8ZUJjAfaFg**';
+var cipher = crypto.createCipher('aes256', '0123456789abcdef');
+
+// encrypt plaintext which is in utf8 format
+// to a ciphertext which will be in Base64
+var ciph = cipher.update(plaintext, 'utf8', 'base64');
+ciph += cipher.final('base64');
+
+var decipher = crypto.createDecipher('aes256', '0123456789abcdef');
+var txt = decipher.update(ciph, 'base64', 'utf8');
+txt += decipher.final('utf8');
+
+assert.equal(txt, plaintext, 'encryption and decryption with Base64');
+
+
 // Test encyrption and decryption with explicit key and iv
 var encryption_key = '0123456789abcd0123456789';
 var iv = '12345678';
@@ -119,3 +161,21 @@ txt += decipher.final('utf8');
 
 assert.equal(txt, plaintext, 'encryption and decryption with key and iv');
 
+// update() should only take buffers / strings
+assert.throws(function() {
+  crypto.createHash('sha1').update({foo: 'bar'});
+}, /string or buffer/);
+
+
+// Test RSA key signing/verification
+var rsaSign = crypto.createSign('RSA-SHA1');
+var rsaVerify = crypto.createVerify('RSA-SHA1');
+assert.ok(rsaSign);
+assert.ok(rsaVerify);
+
+rsaSign.update(rsaPubPem);
+var rsaSignature = rsaSign.sign(rsaKeyPem, 'hex');
+assert.equal(rsaSignature, '5c50e3145c4e2497aadb0eabc83b342d0b0021ece0d4c4a064b7c8f020d7e2688b122bfb54c724ac9ee169f83f66d2fe90abeb95e8e1290e7e177152a4de3d944cf7d4883114a20ed0f78e70e25ef0f60f06b858e6af42a2f276ede95bbc6bc9a9bbdda15bd663186a6f40819a7af19e577bb2efa5e579a1f5ce8a0d4ca8b8f6');
+
+rsaVerify.update(rsaPubPem);
+assert.equal(rsaVerify.verify(rsaPubPem, rsaSignature, 'hex'), 1);

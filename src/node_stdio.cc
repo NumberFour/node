@@ -1,8 +1,23 @@
-#ifdef __MINGW32__
-# include "node_stdio_win32.cc"
-#endif
-
-#ifdef __POSIX__
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #include <node_stdio.h>
 #include <node_events.h>
@@ -150,13 +165,12 @@ static Handle<Value> IsATTY (const Arguments& args) {
 
 
 /* STDERR IS ALWAY SYNC ALWAYS UTF8 */
-static Handle<Value>
-WriteError (const Arguments& args)
-{
+static Handle<Value> WriteError (const Arguments& args) {
   HandleScope scope;
 
-  if (args.Length() < 1)
+  if (args.Length() < 1) {
     return Undefined();
+  }
 
   String::Utf8Value msg(args[0]->ToString());
 
@@ -174,7 +188,7 @@ WriteError (const Arguments& args)
     written += (size_t)r;
   }
 
-  return Undefined();
+  return True();
 }
 
 
@@ -301,7 +315,7 @@ void Stdio::Initialize(v8::Handle<v8::Object> target) {
   NODE_SET_METHOD(target, "isStdinBlocking", IsStdinBlocking);
   NODE_SET_METHOD(target, "setRawMode", SetRawMode);
   NODE_SET_METHOD(target, "getWindowSize", GetWindowSize);
-  NODE_SET_METHOD(target, "setWindowSize", GetWindowSize);
+  NODE_SET_METHOD(target, "setWindowSize", SetWindowSize);
   NODE_SET_METHOD(target, "isatty", IsATTY);
   NODE_SET_METHOD(target, "openpty", OpenPTY);
 
@@ -315,5 +329,3 @@ void Stdio::Initialize(v8::Handle<v8::Object> target) {
 }  // namespace node
 
 NODE_MODULE(node_stdio, node::Stdio::Initialize);
-
-#endif // __POSIX__

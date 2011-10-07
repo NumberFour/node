@@ -1,4 +1,7 @@
-/* Copyright 2009,2010 Ryan Dahl <ry@tinyclouds.org>
+/* Based on src/http/ngx_http_parse.c from NGINX copyright Igor Sysoev
+ *
+ * Additional changes are licensed under the same terms as NGINX and
+ * copyright Joyent, Inc. and other Node contributors. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to
@@ -97,6 +100,7 @@ static const char *method_strings[] =
   , "NOTIFY"
   , "SUBSCRIBE"
   , "UNSUBSCRIBE"
+  , "PATCH"
   };
 
 
@@ -186,7 +190,7 @@ static const uint8_t normal_url_char[256] = {
 /* 112  p   113  q   114  r   115  s   116  t   117  u   118  v   119  w  */
         1,       1,       1,       1,       1,       1,       1,       1,
 /* 120  x   121  y   122  z   123  {   124  |   125  }   126  ~   127 del */
-        1,       1,       1,       1,       1,       1,       1,       0 };
+        1,       1,       1,       1,       1,       1,       1,       0, };
 
 
 enum state
@@ -237,18 +241,21 @@ enum state
   , s_header_field
   , s_header_value_start
   , s_header_value
+  , s_header_value_lws
 
   , s_header_almost_done
 
+  , s_chunk_size_start
+  , s_chunk_size
+  , s_chunk_parameters
+  , s_chunk_size_almost_done
+  
   , s_headers_almost_done
   /* Important: 's_headers_almost_done' must be the last 'header' state. All
    * states beyond this must be 'body' states. It is used for overflow
    * checking. See the PARSING_HEADER() macro.
    */
-  , s_chunk_size_start
-  , s_chunk_size
-  , s_chunk_size_almost_done
-  , s_chunk_parameters
+
   , s_chunk_data
   , s_chunk_data_almost_done
   , s_chunk_data_done
@@ -258,7 +265,7 @@ enum state
   };
 
 
-#define PARSING_HEADER(state) (state <= s_headers_almost_done && 0 == (parser->flags & F_TRAILING))
+#define PARSING_HEADER(state) (state <= s_headers_almost_done)
 
 
 enum header_states
@@ -288,20 +295,24 @@ enum header_states
   };
 
 
-enum flags
-  { F_CHUNKED               = 1 << 0
-  , F_CONNECTION_KEEP_ALIVE = 1 << 1
-  , F_CONNECTION_CLOSE      = 1 << 2
-  , F_TRAILING              = 1 << 3
-  , F_UPGRADE               = 1 << 4
-  , F_SKIPBODY              = 1 << 5
-  };
+/* Macros for character classes; depends on strict-mode  */
+#define CR                  '\r'
+#define LF                  '\n'
+#define LOWER(c)            (unsigned char)(c | 0x20)
+#define TOKEN(c)            (tokens[(unsigned char)c])
+#define IS_ALPHA(c)         ((c) >= 'a' && (c) <= 'z')
+#define IS_NUM(c)           ((c) >= '0' && (c) <= '9')
+#define IS_ALPHANUM(c)      (IS_ALPHA(c) || IS_NUM(c))
 
-
-#define CR '\r'
-#define LF '\n'
-#define LOWER(c) (unsigned char)(c | 0x20)
-#define TOKEN(c) tokens[(unsigned char)c]
+#if HTTP_PARSER_STRICT
+#define IS_URL_CHAR(c)      (normal_url_char[(unsigned char) (c)])
+#define IS_HOST_CHAR(c)     (IS_ALPHANUM(c) || (c) == '.' || (c) == '-')
+#else
+#define IS_URL_CHAR(c)                                                         \
+  (normal_url_char[(unsigned char) (c)] || ((c) & 0x80))
+#define IS_HOST_CHAR(c)                                                        \
+  (IS_ALPHANUM(c) || (c) == '.' || (c) == '-' || (c) == '_')
+#endif
 
 
 #define start_state (parser->type == HTTP_REQUEST ? s_start_req : s_start_res)
@@ -322,6 +333,7 @@ size_t http_parser_execute (http_parser *parser,
                             size_t len)
 {
   char c, ch;
+  int8_t unhex_val;
   const char *p = data, *pe;
   int64_t to_read;
 
@@ -331,10 +343,20 @@ size_t http_parser_execute (http_parser *parser,
   uint64_t nread = parser->nread;
 
   if (len == 0) {
-    if (state == s_body_identity_eof) {
-      CALLBACK2(message_complete);
+    switch (state) {
+      case s_body_identity_eof:
+        CALLBACK2(message_complete);
+        return 0;
+
+      case s_dead:
+      case s_start_req_or_res:
+      case s_start_res:
+      case s_start_req:
+        return 0;
+
+      default:
+        return 1; // error
     }
-    return 0;
   }
 
   /* technically we could combine all of these (except for url_mark) into one
@@ -468,7 +490,7 @@ size_t http_parser_execute (http_parser *parser,
           break;
         }
 
-        if (ch < '0' || ch > '9') goto error;
+        if (!IS_NUM(ch)) goto error;
 
         parser->http_major *= 10;
         parser->http_major += ch - '0';
@@ -479,7 +501,7 @@ size_t http_parser_execute (http_parser *parser,
 
       /* first digit of minor HTTP version */
       case s_res_first_http_minor:
-        if (ch < '0' || ch > '9') goto error;
+        if (!IS_NUM(ch)) goto error;
         parser->http_minor = ch - '0';
         state = s_res_http_minor;
         break;
@@ -492,7 +514,7 @@ size_t http_parser_execute (http_parser *parser,
           break;
         }
 
-        if (ch < '0' || ch > '9') goto error;
+        if (!IS_NUM(ch)) goto error;
 
         parser->http_minor *= 10;
         parser->http_minor += ch - '0';
@@ -503,7 +525,7 @@ size_t http_parser_execute (http_parser *parser,
 
       case s_res_first_status_code:
       {
-        if (ch < '0' || ch > '9') {
+        if (!IS_NUM(ch)) {
           if (ch == ' ') {
             break;
           }
@@ -516,7 +538,7 @@ size_t http_parser_execute (http_parser *parser,
 
       case s_res_status_code:
       {
-        if (ch < '0' || ch > '9') {
+        if (!IS_NUM(ch)) {
           switch (ch) {
             case ' ':
               state = s_res_status;
@@ -568,7 +590,7 @@ size_t http_parser_execute (http_parser *parser,
 
         CALLBACK2(message_begin);
 
-        if (ch < 'A' || 'Z' < ch) goto error;
+        if (!IS_ALPHA(LOWER(ch))) goto error;
 
       start_req_method_assign:
         parser->method = (enum http_method) 0;
@@ -582,7 +604,9 @@ size_t http_parser_execute (http_parser *parser,
           case 'M': parser->method = HTTP_MKCOL; /* or MOVE, MKACTIVITY, MERGE, M-SEARCH */ break;
           case 'N': parser->method = HTTP_NOTIFY; break;
           case 'O': parser->method = HTTP_OPTIONS; break;
-          case 'P': parser->method = HTTP_POST; /* or PROPFIND or PROPPATCH or PUT */ break;
+          case 'P': parser->method = HTTP_POST;
+            /* or PROPFIND or PROPPATCH or PUT or PATCH */
+            break;
           case 'R': parser->method = HTTP_REPORT; break;
           case 'S': parser->method = HTTP_SUBSCRIBE; break;
           case 'T': parser->method = HTTP_TRACE; break;
@@ -623,6 +647,8 @@ size_t http_parser_execute (http_parser *parser,
           parser->method = HTTP_PROPFIND; /* or HTTP_PROPPATCH */
         } else if (index == 1 && parser->method == HTTP_POST && ch == 'U') {
           parser->method = HTTP_PUT;
+        } else if (index == 1 && parser->method == HTTP_POST && ch == 'A') {
+          parser->method = HTTP_PATCH;
         } else if (index == 2 && parser->method == HTTP_UNLOCK && ch == 'S') {
           parser->method = HTTP_UNSUBSCRIBE;
         } else if (index == 4 && parser->method == HTTP_PROPFIND && ch == 'P') {
@@ -647,9 +673,13 @@ size_t http_parser_execute (http_parser *parser,
 
         c = LOWER(ch);
 
-        if (c >= 'a' && c <= 'z') {
+        /* Proxied requests are followed by scheme of an absolute URI (alpha).
+         * CONNECT is followed by a hostname, which begins with alphanum.
+         * All other methods are followed by '/' or '*' (handled above).
+         */
+        if (IS_ALPHA(ch) || (parser->method == HTTP_CONNECT && IS_NUM(ch))) {
           MARK(url);
-          state = s_req_schema;
+          state = (parser->method == HTTP_CONNECT) ? s_req_host : s_req_schema;
           break;
         }
 
@@ -660,16 +690,10 @@ size_t http_parser_execute (http_parser *parser,
       {
         c = LOWER(ch);
 
-        if (c >= 'a' && c <= 'z') break;
+        if (IS_ALPHA(c)) break;
 
         if (ch == ':') {
           state = s_req_schema_slash;
-          break;
-        } else if (ch == '.') {
-          state = s_req_host;
-          break;
-        } else if ('0' <= ch && ch <= '9') {
-          state = s_req_host;
           break;
         }
 
@@ -689,8 +713,7 @@ size_t http_parser_execute (http_parser *parser,
       case s_req_host:
       {
         c = LOWER(ch);
-        if (c >= 'a' && c <= 'z') break;
-        if ((ch >= '0' && ch <= '9') || ch == '.' || ch == '-') break;
+        if (IS_HOST_CHAR(ch)) break;
         switch (ch) {
           case ':':
             state = s_req_port;
@@ -707,6 +730,9 @@ size_t http_parser_execute (http_parser *parser,
             CALLBACK(url);
             state = s_req_http_start;
             break;
+          case '?':
+            state = s_req_query_string_start;
+            break;
           default:
             goto error;
         }
@@ -715,7 +741,7 @@ size_t http_parser_execute (http_parser *parser,
 
       case s_req_port:
       {
-        if (ch >= '0' && ch <= '9') break;
+        if (IS_NUM(ch)) break;
         switch (ch) {
           case '/':
             MARK(path);
@@ -729,6 +755,9 @@ size_t http_parser_execute (http_parser *parser,
             CALLBACK(url);
             state = s_req_http_start;
             break;
+          case '?':
+            state = s_req_query_string_start;
+            break;
           default:
             goto error;
         }
@@ -737,7 +766,7 @@ size_t http_parser_execute (http_parser *parser,
 
       case s_req_path:
       {
-        if (normal_url_char[(unsigned char)ch]) break;
+        if (IS_URL_CHAR(ch)) break;
 
         switch (ch) {
           case ' ':
@@ -775,7 +804,7 @@ size_t http_parser_execute (http_parser *parser,
 
       case s_req_query_string_start:
       {
-        if (normal_url_char[(unsigned char)ch]) {
+        if (IS_URL_CHAR(ch)) {
           MARK(query_string);
           state = s_req_query_string;
           break;
@@ -811,7 +840,7 @@ size_t http_parser_execute (http_parser *parser,
 
       case s_req_query_string:
       {
-        if (normal_url_char[(unsigned char)ch]) break;
+        if (IS_URL_CHAR(ch)) break;
 
         switch (ch) {
           case '?':
@@ -848,7 +877,7 @@ size_t http_parser_execute (http_parser *parser,
 
       case s_req_fragment_start:
       {
-        if (normal_url_char[(unsigned char)ch]) {
+        if (IS_URL_CHAR(ch)) {
           MARK(fragment);
           state = s_req_fragment;
           break;
@@ -885,7 +914,7 @@ size_t http_parser_execute (http_parser *parser,
 
       case s_req_fragment:
       {
-        if (normal_url_char[(unsigned char)ch]) break;
+        if (IS_URL_CHAR(ch)) break;
 
         switch (ch) {
           case ' ':
@@ -963,7 +992,7 @@ size_t http_parser_execute (http_parser *parser,
           break;
         }
 
-        if (ch < '0' || ch > '9') goto error;
+        if (!IS_NUM(ch)) goto error;
 
         parser->http_major *= 10;
         parser->http_major += ch - '0';
@@ -974,7 +1003,7 @@ size_t http_parser_execute (http_parser *parser,
 
       /* first digit of minor HTTP version */
       case s_req_first_http_minor:
-        if (ch < '0' || ch > '9') goto error;
+        if (!IS_NUM(ch)) goto error;
         parser->http_minor = ch - '0';
         state = s_req_http_minor;
         break;
@@ -994,7 +1023,7 @@ size_t http_parser_execute (http_parser *parser,
 
         /* XXX allow spaces after digit? */
 
-        if (ch < '0' || ch > '9') goto error;
+        if (!IS_NUM(ch)) goto error;
 
         parser->http_minor *= 10;
         parser->http_minor += ch - '0';
@@ -1012,6 +1041,7 @@ size_t http_parser_execute (http_parser *parser,
       }
 
       case s_header_field_start:
+      header_field_start:
       {
         if (ch == CR) {
           state = s_headers_almost_done;
@@ -1189,7 +1219,7 @@ size_t http_parser_execute (http_parser *parser,
 
       case s_header_value_start:
       {
-        if (ch == ' ') break;
+        if (ch == ' ' || ch == '\t') break;
 
         MARK(header_value);
 
@@ -1227,7 +1257,7 @@ size_t http_parser_execute (http_parser *parser,
             break;
 
           case h_content_length:
-            if (ch < '0' || ch > '9') goto error;
+            if (!IS_NUM(ch)) goto error;
             parser->content_length = ch - '0';
             break;
 
@@ -1276,7 +1306,7 @@ size_t http_parser_execute (http_parser *parser,
 
           case h_content_length:
             if (ch == ' ') break;
-            if (ch < '0' || ch > '9') goto error;
+            if (!IS_NUM(ch)) goto error;
             parser->content_length *= 10;
             parser->content_length += ch - '0';
             break;
@@ -1332,7 +1362,7 @@ size_t http_parser_execute (http_parser *parser,
       {
         STRICT_CHECK(ch != LF);
 
-        state = s_header_field_start;
+        state = s_header_value_lws;
 
         switch (header_state) {
           case h_connection_keep_alive:
@@ -1346,6 +1376,18 @@ size_t http_parser_execute (http_parser *parser,
             break;
           default:
             break;
+        }
+        break;
+      }
+
+      case s_header_value_lws:
+      {
+        if (ch == ' ' || ch == '\t')
+          state = s_header_value_start;
+        else
+        {
+          state = s_header_field_start;
+          goto header_field_start;
         }
         break;
       }
@@ -1384,6 +1426,7 @@ size_t http_parser_execute (http_parser *parser,
               break;
 
             default:
+              parser->state = state;
               return p - data; /* Error */
           }
         }
@@ -1447,11 +1490,12 @@ size_t http_parser_execute (http_parser *parser,
 
       case s_chunk_size_start:
       {
+        assert(nread == 1);
         assert(parser->flags & F_CHUNKED);
 
-        c = unhex[(unsigned char)ch];
-        if (c == -1) goto error;
-        parser->content_length = c;
+        unhex_val = unhex[(unsigned char)ch];
+        if (unhex_val == -1) goto error;
+        parser->content_length = unhex_val;
         state = s_chunk_size;
         break;
       }
@@ -1465,9 +1509,9 @@ size_t http_parser_execute (http_parser *parser,
           break;
         }
 
-        c = unhex[(unsigned char)ch];
+        unhex_val = unhex[(unsigned char)ch];
 
-        if (c == -1) {
+        if (unhex_val == -1) {
           if (ch == ';' || ch == ' ') {
             state = s_chunk_parameters;
             break;
@@ -1476,7 +1520,7 @@ size_t http_parser_execute (http_parser *parser,
         }
 
         parser->content_length *= 16;
-        parser->content_length += c;
+        parser->content_length += unhex_val;
         break;
       }
 
@@ -1495,6 +1539,8 @@ size_t http_parser_execute (http_parser *parser,
       {
         assert(parser->flags & F_CHUNKED);
         STRICT_CHECK(ch != LF);
+
+        nread = 0;
 
         if (parser->content_length == 0) {
           parser->flags |= F_TRAILING;

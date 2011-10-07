@@ -531,10 +531,25 @@ MaybeObject* Object::GetProperty(Object* receiver,
 
 
 MaybeObject* Object::GetElementWithReceiver(Object* receiver, uint32_t index) {
-  // Non-JS objects do not have integer indexed properties.
-  if (!IsJSObject()) return Heap::undefined_value();
-  return JSObject::cast(this)->GetElementWithReceiver(JSObject::cast(receiver),
-                                                      index);
+  if (IsJSObject()) {
+    return JSObject::cast(this)->GetElementWithReceiver(receiver, index);
+  }
+
+  Object* holder = NULL;
+  Context* global_context = Top::context()->global_context();
+  if (IsString()) {
+    holder = global_context->string_function()->instance_prototype();
+  } else if (IsNumber()) {
+    holder = global_context->number_function()->instance_prototype();
+  } else if (IsBoolean()) {
+    holder = global_context->boolean_function()->instance_prototype();
+  } else {
+    // Undefined and null have no indexed properties.
+    ASSERT(IsUndefined() || IsNull());
+    return Heap::undefined_value();
+  }
+
+  return JSObject::cast(holder)->GetElementWithReceiver(receiver, index);
 }
 
 
@@ -979,6 +994,9 @@ void HeapObject::HeapObjectShortPrint(StringStream* accumulator) {
     case SHARED_FUNCTION_INFO_TYPE:
       accumulator->Add("<SharedFunctionInfo>");
       break;
+    case JS_MESSAGE_OBJECT_TYPE:
+      accumulator->Add("<JSMessageObject>");
+      break;
 #define MAKE_STRUCT_CASE(NAME, Name, name) \
   case NAME##_TYPE:                        \
     accumulator->Put('<');                 \
@@ -1069,6 +1087,7 @@ void HeapObject::IterateBody(InstanceType type, int object_size,
     case JS_GLOBAL_PROXY_TYPE:
     case JS_GLOBAL_OBJECT_TYPE:
     case JS_BUILTINS_OBJECT_TYPE:
+    case JS_MESSAGE_OBJECT_TYPE:
       JSObject::BodyDescriptor::IterateBody(this, object_size, v);
       break;
     case JS_FUNCTION_TYPE:
@@ -1209,6 +1228,8 @@ MaybeObject* JSObject::AddFastPropertyUsingMap(Map* new_map,
 MaybeObject* JSObject::AddFastProperty(String* name,
                                        Object* value,
                                        PropertyAttributes attributes) {
+  ASSERT(!IsJSGlobalProxy());
+
   // Normalize the object if the name is an actual string (not the
   // hidden symbols) and is not a real identifier.
   StringInputBuffer buffer(name);
@@ -1393,7 +1414,7 @@ MaybeObject* JSObject::AddProperty(String* name,
   if (!map()->is_extensible()) {
     Handle<Object> args[1] = {Handle<String>(name)};
     return Top::Throw(*Factory::NewTypeError("object_not_extensible",
-                                               HandleVector(args, 1)));
+                                             HandleVector(args, 1)));
   }
   if (HasFastProperties()) {
     // Ensure the descriptor array does not get too big.
@@ -1423,14 +1444,15 @@ MaybeObject* JSObject::AddProperty(String* name,
 MaybeObject* JSObject::SetPropertyPostInterceptor(
     String* name,
     Object* value,
-    PropertyAttributes attributes) {
+    PropertyAttributes attributes,
+    StrictModeFlag strict) {
   // Check local property, ignore interceptor.
   LookupResult result;
   LocalLookupRealNamedProperty(name, &result);
   if (result.IsFound()) {
     // An existing property, a map transition or a null descriptor was
     // found.  Use set property to handle all these cases.
-    return SetProperty(&result, name, value, attributes);
+    return SetProperty(&result, name, value, attributes, strict);
   }
   // Add a new real property.
   return AddProperty(name, value, attributes);
@@ -1555,7 +1577,8 @@ MaybeObject* JSObject::ConvertDescriptorToField(String* name,
 MaybeObject* JSObject::SetPropertyWithInterceptor(
     String* name,
     Object* value,
-    PropertyAttributes attributes) {
+    PropertyAttributes attributes,
+    StrictModeFlag strict) {
   HandleScope scope;
   Handle<JSObject> this_handle(this);
   Handle<String> name_handle(name);
@@ -1584,7 +1607,8 @@ MaybeObject* JSObject::SetPropertyWithInterceptor(
   MaybeObject* raw_result =
       this_handle->SetPropertyPostInterceptor(*name_handle,
                                               *value_handle,
-                                              attributes);
+                                              attributes,
+                                              strict);
   RETURN_IF_SCHEDULED_EXCEPTION();
   return raw_result;
 }
@@ -1592,10 +1616,11 @@ MaybeObject* JSObject::SetPropertyWithInterceptor(
 
 MaybeObject* JSObject::SetProperty(String* name,
                                    Object* value,
-                                   PropertyAttributes attributes) {
+                                   PropertyAttributes attributes,
+                                   StrictModeFlag strict) {
   LookupResult result;
   LocalLookup(name, &result);
-  return SetProperty(&result, name, value, attributes);
+  return SetProperty(&result, name, value, attributes, strict);
 }
 
 
@@ -1701,8 +1726,9 @@ void JSObject::LookupCallbackSetterInPrototypes(String* name,
 }
 
 
-bool JSObject::SetElementWithCallbackSetterInPrototypes(uint32_t index,
-                                                        Object* value) {
+MaybeObject* JSObject::SetElementWithCallbackSetterInPrototypes(uint32_t index,
+                                                                Object* value,
+                                                                bool* found) {
   for (Object* pt = GetPrototype();
        pt != Heap::null_value();
        pt = pt->GetPrototype()) {
@@ -1712,15 +1738,16 @@ bool JSObject::SetElementWithCallbackSetterInPrototypes(uint32_t index,
     NumberDictionary* dictionary = JSObject::cast(pt)->element_dictionary();
     int entry = dictionary->FindEntry(index);
     if (entry != NumberDictionary::kNotFound) {
-      Object* element = dictionary->ValueAt(entry);
       PropertyDetails details = dictionary->DetailsAt(entry);
       if (details.type() == CALLBACKS) {
-        SetElementWithCallback(element, index, value, JSObject::cast(pt));
-        return true;
+        *found = true;
+        return SetElementWithCallback(
+            dictionary->ValueAt(entry), index, value, JSObject::cast(pt));
       }
     }
   }
-  return false;
+  *found = false;
+  return Heap::the_hole_value();
 }
 
 
@@ -1823,8 +1850,9 @@ void JSObject::LookupRealNamedPropertyInPrototypes(String* name,
 // We only need to deal with CALLBACKS and INTERCEPTORS
 MaybeObject* JSObject::SetPropertyWithFailedAccessCheck(LookupResult* result,
                                                         String* name,
-                                                        Object* value) {
-  if (!result->IsProperty()) {
+                                                        Object* value,
+                                                        bool check_prototype) {
+  if (check_prototype && !result->IsProperty()) {
     LookupCallbackSetterInPrototypes(name, result);
   }
 
@@ -1850,7 +1878,8 @@ MaybeObject* JSObject::SetPropertyWithFailedAccessCheck(LookupResult* result,
           LookupResult r;
           LookupRealNamedProperty(name, &r);
           if (r.IsProperty()) {
-            return SetPropertyWithFailedAccessCheck(&r, name, value);
+            return SetPropertyWithFailedAccessCheck(&r, name, value,
+                                                    check_prototype);
           }
           break;
         }
@@ -1871,7 +1900,8 @@ MaybeObject* JSObject::SetPropertyWithFailedAccessCheck(LookupResult* result,
 MaybeObject* JSObject::SetProperty(LookupResult* result,
                                    String* name,
                                    Object* value,
-                                   PropertyAttributes attributes) {
+                                   PropertyAttributes attributes,
+                                   StrictModeFlag strict) {
   // Make sure that the top context does not change when doing callbacks or
   // interceptor calls.
   AssertNoContextChange ncc;
@@ -1891,14 +1921,15 @@ MaybeObject* JSObject::SetProperty(LookupResult* result,
   // Check access rights if needed.
   if (IsAccessCheckNeeded()
       && !Top::MayNamedAccess(this, name, v8::ACCESS_SET)) {
-    return SetPropertyWithFailedAccessCheck(result, name, value);
+    return SetPropertyWithFailedAccessCheck(result, name, value, true);
   }
 
   if (IsJSGlobalProxy()) {
     Object* proto = GetPrototype();
     if (proto->IsNull()) return value;
     ASSERT(proto->IsJSGlobalObject());
-    return JSObject::cast(proto)->SetProperty(result, name, value, attributes);
+    return JSObject::cast(proto)->SetProperty(
+        result, name, value, attributes, strict);
   }
 
   if (!result->IsProperty() && !IsJSContextExtensionObject()) {
@@ -1917,7 +1948,19 @@ MaybeObject* JSObject::SetProperty(LookupResult* result,
     // Neither properties nor transitions found.
     return AddProperty(name, value, attributes);
   }
-  if (result->IsReadOnly() && result->IsProperty()) return value;
+  if (result->IsReadOnly() && result->IsProperty()) {
+    if (strict == kStrictMode) {
+      HandleScope scope;
+      Handle<String> key(name);
+      Handle<Object> holder(this);
+      Handle<Object> args[2] = { key, holder };
+      return Top::Throw(*Factory::NewTypeError("strict_read_only_property",
+                                                HandleVector(args, 2)));
+
+    } else {
+      return value;
+    }
+  }
   // This is a real property that is not read-only, or it is a
   // transition or null descriptor and there are no setters in the prototypes.
   switch (result->type()) {
@@ -1945,7 +1988,7 @@ MaybeObject* JSObject::SetProperty(LookupResult* result,
                                      value,
                                      result->holder());
     case INTERCEPTOR:
-      return SetPropertyWithInterceptor(name, value, attributes);
+      return SetPropertyWithInterceptor(name, value, attributes, strict);
     case CONSTANT_TRANSITION: {
       // If the same constant function is being added we can simply
       // transition to the target map.
@@ -1981,7 +2024,7 @@ MaybeObject* JSObject::SetProperty(LookupResult* result,
 // callback setter removed.  The two lines looking up the LookupResult
 // result are also added.  If one of the functions is changed, the other
 // should be.
-MaybeObject* JSObject::IgnoreAttributesAndSetLocalProperty(
+MaybeObject* JSObject::SetLocalPropertyIgnoreAttributes(
     String* name,
     Object* value,
     PropertyAttributes attributes) {
@@ -1993,14 +2036,14 @@ MaybeObject* JSObject::IgnoreAttributesAndSetLocalProperty(
   // Check access rights if needed.
   if (IsAccessCheckNeeded()
       && !Top::MayNamedAccess(this, name, v8::ACCESS_SET)) {
-    return SetPropertyWithFailedAccessCheck(&result, name, value);
+    return SetPropertyWithFailedAccessCheck(&result, name, value, false);
   }
 
   if (IsJSGlobalProxy()) {
     Object* proto = GetPrototype();
     if (proto->IsNull()) return value;
     ASSERT(proto->IsJSGlobalObject());
-    return JSObject::cast(proto)->IgnoreAttributesAndSetLocalProperty(
+    return JSObject::cast(proto)->SetLocalPropertyIgnoreAttributes(
         name,
         value,
         attributes);
@@ -2281,6 +2324,9 @@ MaybeObject* JSObject::NormalizeProperties(PropertyNormalizationMode mode,
 
   // The global object is always normalized.
   ASSERT(!IsGlobalObject());
+
+  // JSGlobalProxy must never be normalized
+  ASSERT(!IsJSGlobalProxy());
 
   // Allocate new content.
   int property_count = map()->NumberOfDescribedProperties();
@@ -2607,7 +2653,17 @@ MaybeObject* JSObject::DeleteElement(uint32_t index, DeleteMode mode) {
       NumberDictionary* dictionary = element_dictionary();
       int entry = dictionary->FindEntry(index);
       if (entry != NumberDictionary::kNotFound) {
-        return dictionary->DeleteProperty(entry, mode);
+        Object* result = dictionary->DeleteProperty(entry, mode);
+        if (mode == STRICT_DELETION && result == Heap::false_value()) {
+          // In strict mode, deleting a non-configurable property throws
+          // exception. dictionary->DeleteProperty will return false_value()
+          // if a non-configurable property is being deleted.
+          HandleScope scope;
+          Handle<Object> i = Factory::NewNumberFromUint(index);
+          Handle<Object> args[2] = { i, Handle<Object>(this) };
+          return Top::Throw(*Factory::NewTypeError("strict_delete_property",
+                                                   HandleVector(args, 2)));
+        }
       }
       break;
     }
@@ -2646,6 +2702,13 @@ MaybeObject* JSObject::DeleteProperty(String* name, DeleteMode mode) {
     if (!result.IsProperty()) return Heap::true_value();
     // Ignore attributes if forcing a deletion.
     if (result.IsDontDelete() && mode != FORCE_DELETION) {
+      if (mode == STRICT_DELETION) {
+        // Deleting a non-configurable property in strict mode.
+        HandleScope scope;
+        Handle<Object> args[2] = { Handle<Object>(name), Handle<Object>(this) };
+        return Top::Throw(*Factory::NewTypeError("strict_delete_property",
+                                                 HandleVector(args, 2)));
+      }
       return Heap::false_value();
     }
     // Check for interceptor.
@@ -2768,6 +2831,19 @@ bool JSObject::ReferencesObject(Object* obj) {
 
 
 MaybeObject* JSObject::PreventExtensions() {
+  if (IsAccessCheckNeeded() &&
+      !Top::MayNamedAccess(this, Heap::undefined_value(), v8::ACCESS_KEYS)) {
+    Top::ReportFailedAccessCheck(this, v8::ACCESS_KEYS);
+    return Heap::false_value();
+  }
+
+  if (IsJSGlobalProxy()) {
+    Object* proto = GetPrototype();
+    if (proto->IsNull()) return this;
+    ASSERT(proto->IsJSGlobalObject());
+    return JSObject::cast(proto)->PreventExtensions();
+  }
+
   // If there are fast elements we normalize.
   if (HasFastElements()) {
     Object* ok;
@@ -2932,7 +3008,6 @@ MaybeObject* JSObject::DefineGetterSetter(String* name,
 
   uint32_t index = 0;
   bool is_element = name->AsArrayIndex(&index);
-  if (is_element && IsJSArray()) return Heap::undefined_value();
 
   if (is_element) {
     switch (GetElementsKind()) {
@@ -5143,6 +5218,26 @@ bool String::IsEqualTo(Vector<const char> str) {
 }
 
 
+bool String::IsAsciiEqualTo(Vector<const char> str) {
+  int slen = length();
+  if (str.length() != slen) return false;
+  for (int i = 0; i < slen; i++) {
+    if (Get(i) != static_cast<uint16_t>(str[i])) return false;
+  }
+  return true;
+}
+
+
+bool String::IsTwoByteEqualTo(Vector<const uc16> str) {
+  int slen = length();
+  if (str.length() != slen) return false;
+  for (int i = 0; i < slen; i++) {
+    if (Get(i) != str[i]) return false;
+  }
+  return true;
+}
+
+
 template <typename schar>
 static inline uint32_t HashSequentialString(const schar* chars, int length) {
   StringHasher hasher(length);
@@ -5378,7 +5473,8 @@ void JSFunction::JSFunctionIterateBody(int object_size, ObjectVisitor* v) {
 
 void JSFunction::MarkForLazyRecompilation() {
   ASSERT(is_compiled() && !IsOptimized());
-  ASSERT(shared()->allows_lazy_compilation());
+  ASSERT(shared()->allows_lazy_compilation() ||
+         code()->optimizable());
   ReplaceCode(Builtins::builtin(Builtins::LazyRecompile));
 }
 
@@ -5398,9 +5494,11 @@ uint32_t JSFunction::SourceHash() {
 
 bool JSFunction::IsInlineable() {
   if (IsBuiltin()) return false;
+  SharedFunctionInfo* shared_info = shared();
   // Check that the function has a script associated with it.
-  if (!shared()->script()->IsScript()) return false;
-  Code* code = shared()->code();
+  if (!shared_info->script()->IsScript()) return false;
+  if (shared_info->optimization_disabled()) return false;
+  Code* code = shared_info->code();
   if (code->kind() == Code::OPTIMIZED_FUNCTION) return true;
   // If we never ran this (unlikely) then lets try to optimize it.
   if (code->kind() != Code::FUNCTION) return true;
@@ -5894,7 +5992,7 @@ void Code::CopyFrom(const CodeDesc& desc) {
       Handle<Object> p = it.rinfo()->target_object_handle(origin);
       it.rinfo()->set_target_object(*p);
     } else if (mode == RelocInfo::GLOBAL_PROPERTY_CELL) {
-      Handle<JSGlobalPropertyCell> cell  = it.rinfo()->target_cell_handle();
+      Handle<JSGlobalPropertyCell> cell = it.rinfo()->target_cell_handle();
       it.rinfo()->set_target_cell(*cell);
     } else if (RelocInfo::IsCodeTarget(mode)) {
       // rewrite code handles in inline cache targets to direct
@@ -5966,21 +6064,16 @@ int Code::SourceStatementPosition(Address pc) {
 }
 
 
-uint8_t* Code::GetSafepointEntry(Address pc) {
+SafepointEntry Code::GetSafepointEntry(Address pc) {
   SafepointTable table(this);
-  unsigned pc_offset = static_cast<unsigned>(pc - instruction_start());
-  for (unsigned i = 0; i < table.length(); i++) {
-    // TODO(kasperl): Replace the linear search with binary search.
-    if (table.GetPcOffset(i) == pc_offset) return table.GetEntry(i);
-  }
-  return NULL;
+  return table.FindEntry(pc);
 }
 
 
 void Code::SetNoStackCheckTable() {
   // Indicate the absence of a stack-check table by a table start after the
   // end of the instructions.  Table start must be aligned, so round up.
-  set_stack_check_table_start(RoundUp(instruction_size(), kIntSize));
+  set_stack_check_table_offset(RoundUp(instruction_size(), kIntSize));
 }
 
 
@@ -6203,10 +6296,36 @@ const char* Code::PropertyType2String(PropertyType type) {
 }
 
 
+void Code::PrintExtraICState(FILE* out, Kind kind, ExtraICState extra) {
+  const char* name = NULL;
+  switch (kind) {
+    case CALL_IC:
+      if (extra == STRING_INDEX_OUT_OF_BOUNDS) {
+        name = "STRING_INDEX_OUT_OF_BOUNDS";
+      }
+      break;
+    case STORE_IC:
+    case KEYED_STORE_IC:
+      if (extra == kStrictMode) {
+        name = "STRICT";
+      }
+      break;
+    default:
+      break;
+  }
+  if (name != NULL) {
+    PrintF(out, "extra_ic_state = %s\n", name);
+  } else {
+    PrintF(out, "etra_ic_state = %d\n", extra);
+  }
+}
+
+
 void Code::Disassemble(const char* name, FILE* out) {
   PrintF(out, "kind = %s\n", Kind2String(kind()));
   if (is_inline_cache_stub()) {
     PrintF(out, "ic_state = %s\n", ICState2String(ic_state()));
+    PrintExtraICState(out, kind(), extra_ic_state());
     PrintF(out, "ic_in_loop = %d\n", ic_in_loop() == IN_LOOP);
     if (ic_state() == MONOMORPHIC) {
       PrintF(out, "type = %s\n", PropertyType2String(type()));
@@ -6244,17 +6363,20 @@ void Code::Disassemble(const char* name, FILE* out) {
       PrintF(out, "%p  %4d  ", (instruction_start() + pc_offset), pc_offset);
       table.PrintEntry(i);
       PrintF(out, " (sp -> fp)");
-      int deoptimization_index = table.GetDeoptimizationIndex(i);
-      if (deoptimization_index != Safepoint::kNoDeoptimizationIndex) {
-        PrintF(out, "  %6d", deoptimization_index);
+      SafepointEntry entry = table.GetEntry(i);
+      if (entry.deoptimization_index() != Safepoint::kNoDeoptimizationIndex) {
+        PrintF(out, "  %6d", entry.deoptimization_index());
       } else {
         PrintF(out, "  <none>");
+      }
+      if (entry.argument_count() > 0) {
+        PrintF(out, " argc: %d", entry.argument_count());
       }
       PrintF(out, "\n");
     }
     PrintF(out, "\n");
   } else if (kind() == FUNCTION) {
-    unsigned offset = stack_check_table_start();
+    unsigned offset = stack_check_table_offset();
     // If there is no stack check table, the "table start" will at or after
     // (due to alignment) the end of the instruction stream.
     if (static_cast<int>(offset) < instruction_size()) {
@@ -6565,7 +6687,6 @@ bool JSObject::HasElementPostInterceptor(JSObject* receiver, uint32_t index) {
       break;
     }
     case PIXEL_ELEMENTS: {
-      // TODO(iposva): Add testcase.
       PixelArray* pixels = PixelArray::cast(elements());
       if (index < static_cast<uint32_t>(pixels->length())) {
         return true;
@@ -6579,7 +6700,6 @@ bool JSObject::HasElementPostInterceptor(JSObject* receiver, uint32_t index) {
     case EXTERNAL_INT_ELEMENTS:
     case EXTERNAL_UNSIGNED_INT_ELEMENTS:
     case EXTERNAL_FLOAT_ELEMENTS: {
-      // TODO(kbr): Add testcase.
       ExternalArray* array = ExternalArray::cast(elements());
       if (index < static_cast<uint32_t>(array->length())) {
         return true;
@@ -6653,6 +6773,13 @@ JSObject::LocalElementType JSObject::HasLocalElement(uint32_t index) {
       !Top::MayIndexedAccess(this, index, v8::ACCESS_HAS)) {
     Top::ReportFailedAccessCheck(this, v8::ACCESS_HAS);
     return UNDEFINED_ELEMENT;
+  }
+
+  if (IsJSGlobalProxy()) {
+    Object* proto = GetPrototype();
+    if (proto->IsNull()) return UNDEFINED_ELEMENT;
+    ASSERT(proto->IsJSGlobalObject());
+    return JSObject::cast(proto)->HasLocalElement(index);
   }
 
   // Check for lookup interceptor
@@ -6775,7 +6902,8 @@ bool JSObject::HasElementWithReceiver(JSObject* receiver, uint32_t index) {
 
 
 MaybeObject* JSObject::SetElementWithInterceptor(uint32_t index,
-                                                 Object* value) {
+                                                 Object* value,
+                                                 bool check_prototype) {
   // Make sure that the top context does not change when doing
   // callbacks or interceptor calls.
   AssertNoContextChange ncc;
@@ -6799,7 +6927,9 @@ MaybeObject* JSObject::SetElementWithInterceptor(uint32_t index,
     if (!result.IsEmpty()) return *value_handle;
   }
   MaybeObject* raw_result =
-      this_handle->SetElementWithoutInterceptor(index, *value_handle);
+      this_handle->SetElementWithoutInterceptor(index,
+                                                *value_handle,
+                                                check_prototype);
   RETURN_IF_SCHEDULED_EXCEPTION();
   return raw_result;
 }
@@ -6910,7 +7040,9 @@ MaybeObject* JSObject::SetElementWithCallback(Object* structure,
 // Adding n elements in fast case is O(n*n).
 // Note: revisit design to have dual undefined values to capture absent
 // elements.
-MaybeObject* JSObject::SetFastElement(uint32_t index, Object* value) {
+MaybeObject* JSObject::SetFastElement(uint32_t index,
+                                      Object* value,
+                                      bool check_prototype) {
   ASSERT(HasFastElements());
 
   Object* elms_obj;
@@ -6920,11 +7052,14 @@ MaybeObject* JSObject::SetFastElement(uint32_t index, Object* value) {
   FixedArray* elms = FixedArray::cast(elms_obj);
   uint32_t elms_length = static_cast<uint32_t>(elms->length());
 
-  if (!IsJSArray() && (index >= elms_length || elms->get(index)->IsTheHole())) {
-    if (SetElementWithCallbackSetterInPrototypes(index, value)) {
-      return value;
-    }
+  if (check_prototype &&
+      (index >= elms_length || elms->get(index)->IsTheHole())) {
+    bool found;
+    MaybeObject* result =
+        SetElementWithCallbackSetterInPrototypes(index, value, &found);
+    if (found) return result;
   }
+
 
   // Check whether there is extra space in fixed array..
   if (index < elms_length) {
@@ -6963,11 +7098,13 @@ MaybeObject* JSObject::SetFastElement(uint32_t index, Object* value) {
     if (!maybe_obj->ToObject(&obj)) return maybe_obj;
   }
   ASSERT(HasDictionaryElements());
-  return SetElement(index, value);
+  return SetElement(index, value, check_prototype);
 }
 
 
-MaybeObject* JSObject::SetElement(uint32_t index, Object* value) {
+MaybeObject* JSObject::SetElement(uint32_t index,
+                                  Object* value,
+                                  bool check_prototype) {
   // Check access rights if needed.
   if (IsAccessCheckNeeded() &&
       !Top::MayIndexedAccess(this, index, v8::ACCESS_SET)) {
@@ -6981,24 +7118,25 @@ MaybeObject* JSObject::SetElement(uint32_t index, Object* value) {
     Object* proto = GetPrototype();
     if (proto->IsNull()) return value;
     ASSERT(proto->IsJSGlobalObject());
-    return JSObject::cast(proto)->SetElement(index, value);
+    return JSObject::cast(proto)->SetElement(index, value, check_prototype);
   }
 
   // Check for lookup interceptor
   if (HasIndexedInterceptor()) {
-    return SetElementWithInterceptor(index, value);
+    return SetElementWithInterceptor(index, value, check_prototype);
   }
 
-  return SetElementWithoutInterceptor(index, value);
+  return SetElementWithoutInterceptor(index, value, check_prototype);
 }
 
 
 MaybeObject* JSObject::SetElementWithoutInterceptor(uint32_t index,
-                                                    Object* value) {
+                                                    Object* value,
+                                                    bool check_prototype) {
   switch (GetElementsKind()) {
     case FAST_ELEMENTS:
       // Fast case.
-      return SetFastElement(index, value);
+      return SetFastElement(index, value, check_prototype);
     case PIXEL_ELEMENTS: {
       PixelArray* pixels = PixelArray::cast(elements());
       return pixels->SetValue(index, value);
@@ -7051,10 +7189,11 @@ MaybeObject* JSObject::SetElementWithoutInterceptor(uint32_t index,
         }
       } else {
         // Index not already used. Look for an accessor in the prototype chain.
-        if (!IsJSArray()) {
-          if (SetElementWithCallbackSetterInPrototypes(index, value)) {
-            return value;
-          }
+        if (check_prototype) {
+          bool found;
+          MaybeObject* result =
+              SetElementWithCallbackSetterInPrototypes(index, value, &found);
+          if (found) return result;
         }
         // When we set the is_extensible flag to false we always force
         // the element into dictionary mode (and force them to stay there).
@@ -7138,7 +7277,7 @@ MaybeObject* JSArray::JSArrayUpdateLengthFromIndex(uint32_t index,
 }
 
 
-MaybeObject* JSObject::GetElementPostInterceptor(JSObject* receiver,
+MaybeObject* JSObject::GetElementPostInterceptor(Object* receiver,
                                                  uint32_t index) {
   // Get element works for both JSObject and JSArray since
   // JSArray::length cannot change.
@@ -7151,11 +7290,7 @@ MaybeObject* JSObject::GetElementPostInterceptor(JSObject* receiver,
       }
       break;
     }
-    case PIXEL_ELEMENTS: {
-      // TODO(iposva): Add testcase and implement.
-      UNIMPLEMENTED();
-      break;
-    }
+    case PIXEL_ELEMENTS:
     case EXTERNAL_BYTE_ELEMENTS:
     case EXTERNAL_UNSIGNED_BYTE_ELEMENTS:
     case EXTERNAL_SHORT_ELEMENTS:
@@ -7163,8 +7298,10 @@ MaybeObject* JSObject::GetElementPostInterceptor(JSObject* receiver,
     case EXTERNAL_INT_ELEMENTS:
     case EXTERNAL_UNSIGNED_INT_ELEMENTS:
     case EXTERNAL_FLOAT_ELEMENTS: {
-      // TODO(kbr): Add testcase and implement.
-      UNIMPLEMENTED();
+      MaybeObject* maybe_value = GetExternalElement(index);
+      Object* value;
+      if (!maybe_value->ToObject(&value)) return maybe_value;
+      if (!value->IsUndefined()) return value;
       break;
     }
     case DICTIONARY_ELEMENTS: {
@@ -7195,14 +7332,14 @@ MaybeObject* JSObject::GetElementPostInterceptor(JSObject* receiver,
 }
 
 
-MaybeObject* JSObject::GetElementWithInterceptor(JSObject* receiver,
+MaybeObject* JSObject::GetElementWithInterceptor(Object* receiver,
                                                  uint32_t index) {
   // Make sure that the top context does not change when doing
   // callbacks or interceptor calls.
   AssertNoContextChange ncc;
   HandleScope scope;
   Handle<InterceptorInfo> interceptor(GetIndexedInterceptor());
-  Handle<JSObject> this_handle(receiver);
+  Handle<Object> this_handle(receiver);
   Handle<JSObject> holder_handle(this);
 
   if (!interceptor->getter()->IsUndefined()) {
@@ -7228,7 +7365,7 @@ MaybeObject* JSObject::GetElementWithInterceptor(JSObject* receiver,
 }
 
 
-MaybeObject* JSObject::GetElementWithReceiver(JSObject* receiver,
+MaybeObject* JSObject::GetElementWithReceiver(Object* receiver,
                                               uint32_t index) {
   // Check access rights if needed.
   if (IsAccessCheckNeeded() &&
@@ -7252,6 +7389,48 @@ MaybeObject* JSObject::GetElementWithReceiver(JSObject* receiver,
       }
       break;
     }
+    case PIXEL_ELEMENTS:
+    case EXTERNAL_BYTE_ELEMENTS:
+    case EXTERNAL_UNSIGNED_BYTE_ELEMENTS:
+    case EXTERNAL_SHORT_ELEMENTS:
+    case EXTERNAL_UNSIGNED_SHORT_ELEMENTS:
+    case EXTERNAL_INT_ELEMENTS:
+    case EXTERNAL_UNSIGNED_INT_ELEMENTS:
+    case EXTERNAL_FLOAT_ELEMENTS: {
+      MaybeObject* maybe_value = GetExternalElement(index);
+      Object* value;
+      if (!maybe_value->ToObject(&value)) return maybe_value;
+      if (!value->IsUndefined()) return value;
+      break;
+    }
+    case DICTIONARY_ELEMENTS: {
+      NumberDictionary* dictionary = element_dictionary();
+      int entry = dictionary->FindEntry(index);
+      if (entry != NumberDictionary::kNotFound) {
+        Object* element = dictionary->ValueAt(entry);
+        PropertyDetails details = dictionary->DetailsAt(entry);
+        if (details.type() == CALLBACKS) {
+          return GetElementWithCallback(receiver,
+                                        element,
+                                        index,
+                                        this);
+        }
+        return element;
+      }
+      break;
+    }
+  }
+
+  Object* pt = GetPrototype();
+  if (pt == Heap::null_value()) return Heap::undefined_value();
+  return pt->GetElementWithReceiver(receiver, index);
+}
+
+
+MaybeObject* JSObject::GetExternalElement(uint32_t index) {
+  // Get element works for both JSObject and JSArray since
+  // JSArray::length cannot change.
+  switch (GetElementsKind()) {
     case PIXEL_ELEMENTS: {
       PixelArray* pixels = PixelArray::cast(elements());
       if (index < static_cast<uint32_t>(pixels->length())) {
@@ -7319,27 +7498,12 @@ MaybeObject* JSObject::GetElementWithReceiver(JSObject* receiver,
       }
       break;
     }
-    case DICTIONARY_ELEMENTS: {
-      NumberDictionary* dictionary = element_dictionary();
-      int entry = dictionary->FindEntry(index);
-      if (entry != NumberDictionary::kNotFound) {
-        Object* element = dictionary->ValueAt(entry);
-        PropertyDetails details = dictionary->DetailsAt(entry);
-        if (details.type() == CALLBACKS) {
-          return GetElementWithCallback(receiver,
-                                        element,
-                                        index,
-                                        this);
-        }
-        return element;
-      }
+    case FAST_ELEMENTS:
+    case DICTIONARY_ELEMENTS:
+      UNREACHABLE();
       break;
-    }
   }
-
-  Object* pt = GetPrototype();
-  if (pt == Heap::null_value()) return Heap::undefined_value();
-  return pt->GetElementWithReceiver(receiver, index);
+  return Heap::undefined_value();
 }
 
 
@@ -7954,20 +8118,28 @@ class StringKey : public HashTableKey {
 // StringSharedKeys are used as keys in the eval cache.
 class StringSharedKey : public HashTableKey {
  public:
-  StringSharedKey(String* source, SharedFunctionInfo* shared)
-      : source_(source), shared_(shared) { }
+  StringSharedKey(String* source,
+                  SharedFunctionInfo* shared,
+                  StrictModeFlag strict_mode)
+      : source_(source),
+        shared_(shared),
+        strict_mode_(strict_mode) { }
 
   bool IsMatch(Object* other) {
     if (!other->IsFixedArray()) return false;
     FixedArray* pair = FixedArray::cast(other);
     SharedFunctionInfo* shared = SharedFunctionInfo::cast(pair->get(0));
     if (shared != shared_) return false;
+    StrictModeFlag strict_mode = static_cast<StrictModeFlag>(
+        Smi::cast(pair->get(2))->value());
+    if (strict_mode != strict_mode_) return false;
     String* source = String::cast(pair->get(1));
     return source->Equals(source_);
   }
 
   static uint32_t StringSharedHashHelper(String* source,
-                                         SharedFunctionInfo* shared) {
+                                         SharedFunctionInfo* shared,
+                                         StrictModeFlag strict_mode) {
     uint32_t hash = source->Hash();
     if (shared->HasSourceCode()) {
       // Instead of using the SharedFunctionInfo pointer in the hash
@@ -7977,36 +8149,41 @@ class StringSharedKey : public HashTableKey {
       // collection.
       Script* script = Script::cast(shared->script());
       hash ^= String::cast(script->source())->Hash();
+      if (strict_mode == kStrictMode) hash ^= 0x8000;
       hash += shared->start_position();
     }
     return hash;
   }
 
   uint32_t Hash() {
-    return StringSharedHashHelper(source_, shared_);
+    return StringSharedHashHelper(source_, shared_, strict_mode_);
   }
 
   uint32_t HashForObject(Object* obj) {
     FixedArray* pair = FixedArray::cast(obj);
     SharedFunctionInfo* shared = SharedFunctionInfo::cast(pair->get(0));
     String* source = String::cast(pair->get(1));
-    return StringSharedHashHelper(source, shared);
+    StrictModeFlag strict_mode = static_cast<StrictModeFlag>(
+        Smi::cast(pair->get(2))->value());
+    return StringSharedHashHelper(source, shared, strict_mode);
   }
 
   MUST_USE_RESULT MaybeObject* AsObject() {
     Object* obj;
-    { MaybeObject* maybe_obj = Heap::AllocateFixedArray(2);
+    { MaybeObject* maybe_obj = Heap::AllocateFixedArray(3);
       if (!maybe_obj->ToObject(&obj)) return maybe_obj;
     }
     FixedArray* pair = FixedArray::cast(obj);
     pair->set(0, shared_);
     pair->set(1, source_);
+    pair->set(2, Smi::FromInt(strict_mode_));
     return pair;
   }
 
  private:
   String* source_;
   SharedFunctionInfo* shared_;
+  StrictModeFlag strict_mode_;
 };
 
 
@@ -8083,6 +8260,85 @@ class Utf8SymbolKey : public HashTableKey {
   Vector<const char> string_;
   uint32_t hash_field_;
   int chars_;  // Caches the number of characters when computing the hash code.
+};
+
+
+template <typename Char>
+class SequentialSymbolKey : public HashTableKey {
+ public:
+  explicit SequentialSymbolKey(Vector<const Char> string)
+      : string_(string), hash_field_(0) { }
+
+  uint32_t Hash() {
+    StringHasher hasher(string_.length());
+
+    // Very long strings have a trivial hash that doesn't inspect the
+    // string contents.
+    if (hasher.has_trivial_hash()) {
+      hash_field_ = hasher.GetHashField();
+    } else {
+      int i = 0;
+      // Do the iterative array index computation as long as there is a
+      // chance this is an array index.
+      while (i < string_.length() && hasher.is_array_index()) {
+        hasher.AddCharacter(static_cast<uc32>(string_[i]));
+        i++;
+      }
+
+      // Process the remaining characters without updating the array
+      // index.
+      while (i < string_.length()) {
+        hasher.AddCharacterNoIndex(static_cast<uc32>(string_[i]));
+        i++;
+      }
+      hash_field_ = hasher.GetHashField();
+    }
+
+    uint32_t result = hash_field_ >> String::kHashShift;
+    ASSERT(result != 0);  // Ensure that the hash value of 0 is never computed.
+    return result;
+  }
+
+
+  uint32_t HashForObject(Object* other) {
+    return String::cast(other)->Hash();
+  }
+
+  Vector<const Char> string_;
+  uint32_t hash_field_;
+};
+
+
+
+class AsciiSymbolKey : public SequentialSymbolKey<char> {
+ public:
+  explicit AsciiSymbolKey(Vector<const char> str)
+      : SequentialSymbolKey<char>(str) { }
+
+  bool IsMatch(Object* string) {
+    return String::cast(string)->IsAsciiEqualTo(string_);
+  }
+
+  MaybeObject* AsObject() {
+    if (hash_field_ == 0) Hash();
+    return Heap::AllocateAsciiSymbol(string_, hash_field_);
+  }
+};
+
+
+class TwoByteSymbolKey : public SequentialSymbolKey<uc16> {
+ public:
+  explicit TwoByteSymbolKey(Vector<const uc16> str)
+      : SequentialSymbolKey<uc16>(str) { }
+
+  bool IsMatch(Object* string) {
+    return String::cast(string)->IsTwoByteEqualTo(string_);
+  }
+
+  MaybeObject* AsObject() {
+    if (hash_field_ == 0) Hash();
+    return Heap::AllocateTwoByteSymbol(string_, hash_field_);
+  }
 };
 
 
@@ -8416,10 +8672,20 @@ MaybeObject* JSObject::PrepareSlowElementsForSort(uint32_t limit) {
         if (value->IsUndefined()) {
           undefs++;
         } else {
+          if (pos > static_cast<uint32_t>(Smi::kMaxValue)) {
+            // Adding an entry with the key beyond smi-range requires
+            // allocation. Bailout.
+            return Smi::FromInt(-1);
+          }
           new_dict->AddNumberEntry(pos, value, details)->ToObjectUnchecked();
           pos++;
         }
       } else {
+        if (key > static_cast<uint32_t>(Smi::kMaxValue)) {
+          // Adding an entry with the key beyond smi-range requires
+          // allocation. Bailout.
+          return Smi::FromInt(-1);
+        }
         new_dict->AddNumberEntry(key, value, details)->ToObjectUnchecked();
       }
     }
@@ -8428,6 +8694,11 @@ MaybeObject* JSObject::PrepareSlowElementsForSort(uint32_t limit) {
   uint32_t result = pos;
   PropertyDetails no_details = PropertyDetails(NONE, NORMAL);
   while (undefs > 0) {
+    if (pos > static_cast<uint32_t>(Smi::kMaxValue)) {
+      // Adding an entry with the key beyond smi-range requires
+      // allocation. Bailout.
+      return Smi::FromInt(-1);
+    }
     new_dict->AddNumberEntry(pos, Heap::undefined_value(), no_details)->
         ToObjectUnchecked();
     pos++;
@@ -8830,6 +9101,19 @@ MaybeObject* SymbolTable::LookupSymbol(Vector<const char> str, Object** s) {
 }
 
 
+MaybeObject* SymbolTable::LookupAsciiSymbol(Vector<const char> str,
+                                            Object** s) {
+  AsciiSymbolKey key(str);
+  return LookupKey(&key, s);
+}
+
+
+MaybeObject* SymbolTable::LookupTwoByteSymbol(Vector<const uc16> str,
+                                              Object** s) {
+  TwoByteSymbolKey key(str);
+  return LookupKey(&key, s);
+}
+
 MaybeObject* SymbolTable::LookupKey(HashTableKey* key, Object** s) {
   int entry = FindEntry(key);
 
@@ -8873,8 +9157,10 @@ Object* CompilationCacheTable::Lookup(String* src) {
 }
 
 
-Object* CompilationCacheTable::LookupEval(String* src, Context* context) {
-  StringSharedKey key(src, context->closure()->shared());
+Object* CompilationCacheTable::LookupEval(String* src,
+                                          Context* context,
+                                          StrictModeFlag strict_mode) {
+  StringSharedKey key(src, context->closure()->shared(), strict_mode);
   int entry = FindEntry(&key);
   if (entry == kNotFound) return Heap::undefined_value();
   return get(EntryToIndex(entry) + 1);
@@ -8909,8 +9195,10 @@ MaybeObject* CompilationCacheTable::Put(String* src, Object* value) {
 
 MaybeObject* CompilationCacheTable::PutEval(String* src,
                                             Context* context,
-                                            Object* value) {
-  StringSharedKey key(src, context->closure()->shared());
+                                            SharedFunctionInfo* value) {
+  StringSharedKey key(src,
+                      context->closure()->shared(),
+                      value->strict_mode() ? kStrictMode : kNonStrictMode);
   Object* obj;
   { MaybeObject* maybe_obj = EnsureCapacity(1, &key);
     if (!maybe_obj->ToObject(&obj)) return maybe_obj;
@@ -9139,7 +9427,7 @@ Object* Dictionary<Shape, Key>::DeleteProperty(int entry,
                                                JSObject::DeleteMode mode) {
   PropertyDetails details = DetailsAt(entry);
   // Ignore attributes if forcing a deletion.
-  if (details.IsDontDelete() && mode == JSObject::NORMAL_DELETION) {
+  if (details.IsDontDelete() && mode != JSObject::FORCE_DELETION) {
     return Heap::false_value();
   }
   SetEntry(entry, Heap::null_value(), Heap::null_value(), Smi::FromInt(0));

@@ -1,3 +1,24 @@
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 #include <node_crypto.h>
 #include <v8.h>
 
@@ -16,6 +37,14 @@
 # define OPENSSL_CONST
 #endif
 
+#define ASSERT_IS_STRING_OR_BUFFER(val) \
+  if (!val->IsString() && !Buffer::HasInstance(val)) { \
+    return ThrowException(Exception::TypeError(String::New("Not a string or buffer"))); \
+  }
+
+static const char *PUBLIC_KEY_PFX =  "-----BEGIN PUBLIC KEY-----";
+static const int PUBLIC_KEY_PFX_LEN = strlen(PUBLIC_KEY_PFX);
+
 namespace node {
 namespace crypto {
 
@@ -30,6 +59,7 @@ static Persistent<String> valid_to_symbol;
 static Persistent<String> fingerprint_symbol;
 static Persistent<String> name_symbol;
 static Persistent<String> version_symbol;
+static Persistent<String> ext_key_usage_symbol;
 
 
 void SecureContext::Initialize(Handle<Object> target) {
@@ -43,6 +73,7 @@ void SecureContext::Initialize(Handle<Object> target) {
   NODE_SET_PROTOTYPE_METHOD(t, "setKey", SecureContext::SetKey);
   NODE_SET_PROTOTYPE_METHOD(t, "setCert", SecureContext::SetCert);
   NODE_SET_PROTOTYPE_METHOD(t, "addCACert", SecureContext::AddCACert);
+  NODE_SET_PROTOTYPE_METHOD(t, "addCRL", SecureContext::AddCRL);
   NODE_SET_PROTOTYPE_METHOD(t, "addRootCerts", SecureContext::AddRootCerts);
   NODE_SET_PROTOTYPE_METHOD(t, "setCiphers", SecureContext::SetCiphers);
   NODE_SET_PROTOTYPE_METHOD(t, "close", SecureContext::Close);
@@ -70,11 +101,23 @@ Handle<Value> SecureContext::Init(const Arguments& args) {
     String::Utf8Value sslmethod(args[0]->ToString());
 
     if (strcmp(*sslmethod, "SSLv2_method") == 0) {
+#ifndef OPENSSL_NO_SSL2
       method = SSLv2_method();
+#else
+      return ThrowException(Exception::Error(String::New("SSLv2 methods disabled")));
+#endif
     } else if (strcmp(*sslmethod, "SSLv2_server_method") == 0) {
+#ifndef OPENSSL_NO_SSL2
       method = SSLv2_server_method();
+#else
+      return ThrowException(Exception::Error(String::New("SSLv2 methods disabled")));
+#endif
     } else if (strcmp(*sslmethod, "SSLv2_client_method") == 0) {
+#ifndef OPENSSL_NO_SSL2
       method = SSLv2_client_method();
+#else
+      return ThrowException(Exception::Error(String::New("SSLv2 methods disabled")));
+#endif
     } else if (strcmp(*sslmethod, "SSLv3_method") == 0) {
       method = SSLv3_method();
     } else if (strcmp(*sslmethod, "SSLv3_server_method") == 0) {
@@ -103,8 +146,7 @@ Handle<Value> SecureContext::Init(const Arguments& args) {
   SSL_CTX_set_session_cache_mode(sc->ctx_, SSL_SESS_CACHE_SERVER);
   // SSL_CTX_set_session_cache_mode(sc->ctx_,SSL_SESS_CACHE_OFF);
 
-  sc->ca_store_ = X509_STORE_new();
-  SSL_CTX_set_cert_store(sc->ctx_, sc->ca_store_);
+  sc->ca_store_ = NULL;
   return True();
 }
 
@@ -184,6 +226,72 @@ Handle<Value> SecureContext::SetKey(const Arguments& args) {
 }
 
 
+// Read a file that contains our certificate in "PEM" format,
+// possibly followed by a sequence of CA certificates that should be
+// sent to the peer in the Certificate message.
+//
+// Taken from OpenSSL - editted for style.
+int SSL_CTX_use_certificate_chain(SSL_CTX *ctx, BIO *in) {
+  int ret = 0;
+  X509 *x = NULL;
+
+  x = PEM_read_bio_X509_AUX(in, NULL, NULL, NULL);
+
+  if (x == NULL) {
+    SSLerr(SSL_F_SSL_CTX_USE_CERTIFICATE_CHAIN_FILE, ERR_R_PEM_LIB);
+    goto end;
+  }
+
+  ret = SSL_CTX_use_certificate(ctx, x);
+
+  if (ERR_peek_error() != 0) {
+    // Key/certificate mismatch doesn't imply ret==0 ...
+    ret = 0;
+  }
+
+  if (ret) {
+    // If we could set up our certificate, now proceed to
+    // the CA certificates.
+    X509 *ca;
+    int r;
+    unsigned long err;
+
+    if (ctx->extra_certs != NULL) {
+      sk_X509_pop_free(ctx->extra_certs, X509_free);
+      ctx->extra_certs = NULL;
+    }
+
+    while ((ca = PEM_read_bio_X509(in, NULL, NULL, NULL))) {
+      r = SSL_CTX_add_extra_chain_cert(ctx, ca);
+
+      if (!r) {
+        X509_free(ca);
+        ret = 0;
+        goto end;
+      }
+      // Note that we must not free r if it was successfully
+      // added to the chain (while we must free the main
+      // certificate, since its reference count is increased
+      // by SSL_CTX_use_certificate).
+    }
+
+    // When the while loop ends, it's usually just EOF.
+    err = ERR_peek_last_error();
+    if (ERR_GET_LIB(err) == ERR_LIB_PEM &&
+        ERR_GET_REASON(err) == PEM_R_NO_START_LINE) {
+      ERR_clear_error();
+    } else  {
+      // some real error
+      ret = 0;
+    }
+  }
+
+end:
+  if (x != NULL) X509_free(x);
+  return ret;
+}
+
+
 Handle<Value> SecureContext::SetCert(const Arguments& args) {
   HandleScope scope;
 
@@ -194,17 +302,30 @@ Handle<Value> SecureContext::SetCert(const Arguments& args) {
           String::New("Bad parameter")));
   }
 
-  X509* x509 = LoadX509(args[0]);
-  if (!x509) return False();
+  BIO* bio = LoadBIO(args[0]);
+  if (!bio) return False();
 
-  SSL_CTX_use_certificate(sc->ctx_, x509);
-  X509_free(x509);
+  int rv = SSL_CTX_use_certificate_chain(sc->ctx_, bio);
+
+  BIO_free(bio);
+
+  if (!rv) {
+    unsigned long err = ERR_get_error();
+    if (!err) {
+      return ThrowException(Exception::Error(
+          String::New("SSL_CTX_use_certificate_chain")));
+    }
+    char string[120];
+    ERR_error_string(err, string);
+    return ThrowException(Exception::Error(String::New(string)));
+  }
 
   return True();
 }
 
 
 Handle<Value> SecureContext::AddCACert(const Arguments& args) {
+  bool newCAStore = false;
   HandleScope scope;
 
   SecureContext *sc = ObjectWrap::Unwrap<SecureContext>(args.Holder());
@@ -213,15 +334,57 @@ Handle<Value> SecureContext::AddCACert(const Arguments& args) {
     return ThrowException(Exception::TypeError(String::New("Bad parameter")));
   }
 
+  if (!sc->ca_store_) {
+    sc->ca_store_ = X509_STORE_new();
+    newCAStore = true;
+  }
+
   X509* x509 = LoadX509(args[0]);
   if (!x509) return False();
 
   X509_STORE_add_cert(sc->ca_store_, x509);
+  SSL_CTX_add_client_CA(sc->ctx_, x509);
 
   X509_free(x509);
 
+  if (newCAStore) {
+    SSL_CTX_set_cert_store(sc->ctx_, sc->ca_store_);
+  }
+
   return True();
 }
+
+
+Handle<Value> SecureContext::AddCRL(const Arguments& args) {
+  HandleScope scope;
+
+  SecureContext *sc = ObjectWrap::Unwrap<SecureContext>(args.Holder());
+
+  if (args.Length() != 1) {
+    return ThrowException(Exception::TypeError(String::New("Bad parameter")));
+  }
+
+  BIO *bio = LoadBIO(args[0]);
+  if (!bio) return False();
+
+  X509_CRL *x509 = PEM_read_bio_X509_CRL(bio, NULL, NULL, NULL);
+
+  if (x509 == NULL) {
+    BIO_free(bio);
+    return False();
+  }
+
+  X509_STORE_add_crl(sc->ca_store_, x509);
+
+  X509_STORE_set_flags(sc->ca_store_, X509_V_FLAG_CRL_CHECK |
+                                      X509_V_FLAG_CRL_CHECK_ALL);
+
+  BIO_free(bio);
+  X509_CRL_free(x509);
+
+  return True();
+}
+
 
 
 Handle<Value> SecureContext::AddRootCerts(const Arguments& args) {
@@ -229,27 +392,35 @@ Handle<Value> SecureContext::AddRootCerts(const Arguments& args) {
 
   SecureContext *sc = ObjectWrap::Unwrap<SecureContext>(args.Holder());
 
-  for (int i = 0; root_certs[i]; i++) {
-    // TODO: reuse bp ?
-    BIO *bp = BIO_new(BIO_s_mem());
+  assert(sc->ca_store_ == NULL);
 
-    if (!BIO_write(bp, root_certs[i], strlen(root_certs[i]))) {
+  if (!root_cert_store) {
+    root_cert_store = X509_STORE_new();
+
+    for (int i = 0; root_certs[i]; i++) {
+      BIO *bp = BIO_new(BIO_s_mem());
+
+      if (!BIO_write(bp, root_certs[i], strlen(root_certs[i]))) {
+        BIO_free(bp);
+        return False();
+      }
+
+      X509 *x509 = PEM_read_bio_X509(bp, NULL, NULL, NULL);
+
+      if (x509 == NULL) {
+        BIO_free(bp);
+        return False();
+      }
+
+      X509_STORE_add_cert(root_cert_store, x509);
+
       BIO_free(bp);
-      return False();
+      X509_free(x509);
     }
-
-    X509 *x509 = PEM_read_bio_X509(bp, NULL, NULL, NULL);
-
-    if (x509 == NULL) {
-      BIO_free(bp);
-      return False();
-    }
-
-    X509_STORE_add_cert(sc->ca_store_, x509);
-
-    BIO_free(bp);
-    X509_free(x509);
   }
+
+  sc->ca_store_ = root_cert_store;
+  SSL_CTX_set_cert_store(sc->ctx_, sc->ca_store_);
 
   return True();
 }
@@ -273,40 +444,114 @@ Handle<Value> SecureContext::SetCiphers(const Arguments& args) {
 
 Handle<Value> SecureContext::Close(const Arguments& args) {
   HandleScope scope;
-
   SecureContext *sc = ObjectWrap::Unwrap<SecureContext>(args.Holder());
-
-  if (sc->ctx_ != NULL) {
-    SSL_CTX_free(sc->ctx_);
-    sc->ctx_ = NULL;
-    sc->ca_store_ = NULL;
-    return True();
-  }
-
+  sc->FreeCTXMem();
   return False();
 }
 
-char ssl_error_buf[512];
 
-static int serr(SSL *ssl, const char* func, int rv) {
-  if (rv >= 0) {
-    return rv;
-  }
+#ifdef SSL_PRINT_DEBUG
+# define DEBUG_PRINT(...) fprintf (stderr, __VA_ARGS__)
+#else
+# define DEBUG_PRINT(...)
+#endif
 
-  int err = SSL_get_error(ssl, rv);
-  if (err != SSL_ERROR_WANT_WRITE &&
-      err != SSL_ERROR_WANT_READ) {
-    ERR_error_string_n(ERR_get_error(), &ssl_error_buf[0], sizeof(ssl_error_buf));
-    /* fprintf(stderr, "[%p] SSL: %s failed: (%d:%d) %s\n", ssl, func, err, rv, buf); */
+
+int Connection::HandleBIOError(BIO *bio, const char* func, int rv) {
+  if (rv >= 0) return rv;
+
+  int retry = BIO_should_retry(bio);
+
+  if (BIO_should_write(bio)) {
+    DEBUG_PRINT("[%p] BIO: %s want write. should retry %d\n", ssl_, func, retry);
+    return 0;
+
+  } else if (BIO_should_read(bio)) {
+    DEBUG_PRINT("[%p] BIO: %s want read. should retry %d\n", ssl_, func, retry);
+    return 0;
+
+  } else {
+   static char ssl_error_buf[512];
+    ERR_error_string_n(rv, ssl_error_buf, sizeof(ssl_error_buf));
+
+    HandleScope scope;
+    Local<Value> e = Exception::Error(String::New(ssl_error_buf));
+    handle_->Set(String::New("error"), e);
+
+    DEBUG_PRINT("[%p] BIO: %s failed: (%d) %s\n", ssl_, func, rv, ssl_error_buf);
+
     return rv;
-  } else if (err == SSL_ERROR_WANT_WRITE) {
-    /* fprintf(stderr, "[%p] SSL: %s want write\n", ssl, func); */
-  } else if (err == SSL_ERROR_WANT_READ) {
-    /* fprintf(stderr, "[%p] SSL: %s want read\n", ssl, func); */
   }
 
   return 0;
 }
+
+
+int Connection::HandleSSLError(const char* func, int rv) {
+  if (rv >= 0) return rv;
+
+  int err = SSL_get_error(ssl_, rv);
+
+  if (err == SSL_ERROR_WANT_WRITE) {
+    DEBUG_PRINT("[%p] SSL: %s want write\n", ssl_, func);
+    return 0;
+
+  } else if (err == SSL_ERROR_WANT_READ) {
+    DEBUG_PRINT("[%p] SSL: %s want read\n", ssl_, func);
+    return 0;
+
+  } else {
+    static char ssl_error_buf[512];
+    ERR_error_string_n(err, ssl_error_buf, sizeof(ssl_error_buf));
+
+    // XXX We need to drain the error queue for this thread or else OpenSSL
+    // has the possibility of blocking connections? This problem is not well
+    // understood. And we should be somehow propigating these errors up
+    // into JavaScript. There is no test which demonstrates this problem.
+    // https://github.com/joyent/node/issues/1719
+    while ((err = ERR_get_error()) != 0) {
+      ERR_error_string_n(err, ssl_error_buf, sizeof(ssl_error_buf));
+      fprintf(stderr, "(node SSL) %s\n", ssl_error_buf);
+    }
+
+    HandleScope scope;
+    Local<Value> e = Exception::Error(String::New(ssl_error_buf));
+    handle_->Set(String::New("error"), e);
+
+    DEBUG_PRINT("[%p] SSL: %s failed: (%d:%d) %s\n", ssl_, func, err, rv,
+        ssl_error_buf);
+
+    return rv;
+  }
+
+  return 0;
+}
+
+
+void Connection::ClearError() {
+#ifndef NDEBUG
+  HandleScope scope;
+
+  // We should clear the error in JS-land
+  assert(handle_->Get(String::New("error"))->BooleanValue() == false);
+#endif // NDEBUG
+}
+
+
+void Connection::SetShutdownFlags() {
+  HandleScope scope;
+
+  int flags = SSL_get_shutdown(ssl_);
+
+  if (flags & SSL_SENT_SHUTDOWN) {
+    handle_->Set(String::New("sentShutdown"), True());
+  }
+
+  if (flags & SSL_RECEIVED_SHUTDOWN) {
+    handle_->Set(String::New("receivedShutdown"), True());
+  }
+}
+
 
 void Connection::Initialize(Handle<Object> target) {
   HandleScope scope;
@@ -439,7 +684,7 @@ Handle<Value> Connection::New(const Arguments& args) {
 Handle<Value> Connection::EncIn(const Arguments& args) {
   HandleScope scope;
 
-  Connection *ss = ObjectWrap::Unwrap<Connection>(args.Holder());
+  Connection *ss = Connection::Unwrap(args);
 
   if (args.Length() < 3) {
     return ThrowException(Exception::TypeError(
@@ -467,12 +712,9 @@ Handle<Value> Connection::EncIn(const Arguments& args) {
           String::New("Length is extends beyond buffer")));
   }
 
-  int bytes_written = serr(ss->ssl_, "BIO_write", BIO_write(ss->bio_read_, (char*)buffer_data + off, len));
-
-  if (bytes_written < 0) {
-    if (errno == EAGAIN || errno == EINTR) return Null();
-    return ThrowException(ErrnoException(errno, "read"));
-  }
+  int bytes_written = BIO_write(ss->bio_read_, buffer_data + off, len);
+  ss->HandleBIOError(ss->bio_read_, "BIO_write", bytes_written);
+  ss->SetShutdownFlags();
 
   return scope.Close(Integer::New(bytes_written));
 }
@@ -481,7 +723,7 @@ Handle<Value> Connection::EncIn(const Arguments& args) {
 Handle<Value> Connection::ClearOut(const Arguments& args) {
   HandleScope scope;
 
-  Connection *ss = ObjectWrap::Unwrap<Connection>(args.Holder());
+  Connection *ss = Connection::Unwrap(args);
 
   if (args.Length() < 3) {
     return ThrowException(Exception::TypeError(
@@ -509,24 +751,23 @@ Handle<Value> Connection::ClearOut(const Arguments& args) {
           String::New("Length is extends beyond buffer")));
   }
 
-  int bytes_read;
-
   if (!SSL_is_init_finished(ss->ssl_)) {
+    int rv;
+
     if (ss->is_server_) {
-      bytes_read =  serr(ss->ssl_, "SSL_accept:ClearOut", SSL_accept(ss->ssl_));
+      rv = SSL_accept(ss->ssl_);
+      ss->HandleSSLError("SSL_accept:ClearOut", rv);
     } else {
-      bytes_read = serr(ss->ssl_, "SSL_connect:ClearOut", SSL_connect(ss->ssl_));
+      rv = SSL_connect(ss->ssl_);
+      ss->HandleSSLError("SSL_connect:ClearOut", rv);
     }
-    if (bytes_read < 0) {
-      return ThrowException(Exception::Error(v8::String::New(ssl_error_buf)));
-    }
-    return scope.Close(Integer::New(0));
+
+    if (rv < 0) return scope.Close(Integer::New(rv));
   }
 
-  bytes_read = serr(ss->ssl_, "SSL_read:ClearOut", SSL_read(ss->ssl_, (char*)buffer_data + off, len));
-  if (bytes_read < 0) {
-    return ThrowException(Exception::Error(v8::String::New(ssl_error_buf)));
-  }
+  int bytes_read = SSL_read(ss->ssl_, buffer_data + off, len);
+  ss->HandleSSLError("SSL_read:ClearOut", bytes_read);
+  ss->SetShutdownFlags();
 
   return scope.Close(Integer::New(bytes_read));
 }
@@ -535,7 +776,8 @@ Handle<Value> Connection::ClearOut(const Arguments& args) {
 Handle<Value> Connection::ClearPending(const Arguments& args) {
   HandleScope scope;
 
-  Connection *ss = ObjectWrap::Unwrap<Connection>(args.Holder());
+  Connection *ss = Connection::Unwrap(args);
+
   int bytes_pending = BIO_pending(ss->bio_read_);
   return scope.Close(Integer::New(bytes_pending));
 }
@@ -544,7 +786,8 @@ Handle<Value> Connection::ClearPending(const Arguments& args) {
 Handle<Value> Connection::EncPending(const Arguments& args) {
   HandleScope scope;
 
-  Connection *ss = ObjectWrap::Unwrap<Connection>(args.Holder());
+  Connection *ss = Connection::Unwrap(args);
+
   int bytes_pending = BIO_pending(ss->bio_write_);
   return scope.Close(Integer::New(bytes_pending));
 }
@@ -553,7 +796,7 @@ Handle<Value> Connection::EncPending(const Arguments& args) {
 Handle<Value> Connection::EncOut(const Arguments& args) {
   HandleScope scope;
 
-  Connection *ss = ObjectWrap::Unwrap<Connection>(args.Holder());
+  Connection *ss = Connection::Unwrap(args);
 
   if (args.Length() < 3) {
     return ThrowException(Exception::TypeError(
@@ -581,7 +824,10 @@ Handle<Value> Connection::EncOut(const Arguments& args) {
           String::New("Length is extends beyond buffer")));
   }
 
-  int bytes_read = serr(ss->ssl_, "BIO_read:EncOut", BIO_read(ss->bio_write_, (char*)buffer_data + off, len));
+  int bytes_read = BIO_read(ss->bio_write_, buffer_data + off, len);
+
+  ss->HandleBIOError(ss->bio_write_, "BIO_read:EncOut", bytes_read);
+  ss->SetShutdownFlags();
 
   return scope.Close(Integer::New(bytes_read));
 }
@@ -590,7 +836,7 @@ Handle<Value> Connection::EncOut(const Arguments& args) {
 Handle<Value> Connection::ClearIn(const Arguments& args) {
   HandleScope scope;
 
-  Connection *ss = ObjectWrap::Unwrap<Connection>(args.Holder());
+  Connection *ss = Connection::Unwrap(args);
 
   if (args.Length() < 3) {
     return ThrowException(Exception::TypeError(
@@ -607,7 +853,7 @@ Handle<Value> Connection::ClearIn(const Arguments& args) {
   size_t buffer_length = Buffer::Length(buffer_obj);
 
   size_t off = args[1]->Int32Value();
-  if (off >= buffer_length) {
+  if (off > buffer_length) {
     return ThrowException(Exception::Error(
           String::New("Offset is out of bounds")));
   }
@@ -619,25 +865,22 @@ Handle<Value> Connection::ClearIn(const Arguments& args) {
   }
 
   if (!SSL_is_init_finished(ss->ssl_)) {
-    int s;
+    int rv;
     if (ss->is_server_) {
-      s = serr(ss->ssl_, "SSL_accept:ClearIn", SSL_accept(ss->ssl_));
+      rv = SSL_accept(ss->ssl_);
+      ss->HandleSSLError("SSL_accept:ClearIn", rv);
     } else {
-      s = serr(ss->ssl_, "SSL_connect:ClearIn", SSL_connect(ss->ssl_));
+      rv = SSL_connect(ss->ssl_);
+      ss->HandleSSLError("SSL_connect:ClearIn", rv);
     }
 
-    if (s < 0) {
-      return ThrowException(Exception::Error(v8::String::New(ssl_error_buf)));
-    }
-
-    return scope.Close(Integer::New(0));
+    if (rv < 0) return scope.Close(Integer::New(rv));
   }
 
-  int bytes_written = serr(ss->ssl_, "SSL_write:ClearIn", SSL_write(ss->ssl_, (char*)buffer_data + off, len));
+  int bytes_written = SSL_write(ss->ssl_, buffer_data + off, len);
 
-  if (bytes_written < 0) {
-    return ThrowException(Exception::Error(v8::String::New(ssl_error_buf)));
-  }
+  ss->HandleSSLError("SSL_write:ClearIn", bytes_written);
+  ss->SetShutdownFlags();
 
   return scope.Close(Integer::New(bytes_written));
 }
@@ -646,7 +889,7 @@ Handle<Value> Connection::ClearIn(const Arguments& args) {
 Handle<Value> Connection::GetPeerCertificate(const Arguments& args) {
   HandleScope scope;
 
-  Connection *ss = ObjectWrap::Unwrap<Connection>(args.Holder());
+  Connection *ss = Connection::Unwrap(args);
 
   if (ss->ssl_ == NULL) return Undefined();
   Local<Object> info = Object::New();
@@ -696,6 +939,21 @@ Handle<Value> Connection::GetPeerCertificate(const Arguments& args) {
       info->Set(fingerprint_symbol, String::New(fingerprint));
     }
 
+    STACK_OF(ASN1_OBJECT) *eku = (STACK_OF(ASN1_OBJECT) *)X509_get_ext_d2i(
+        peer_cert, NID_ext_key_usage, NULL, NULL);
+    if (eku != NULL) {
+      Local<Array> ext_key_usage = Array::New();
+
+      for (int i = 0; i < sk_ASN1_OBJECT_num(eku); i++) {
+        memset(buf, 0, sizeof(buf));
+        OBJ_obj2txt(buf, sizeof(buf) - 1, sk_ASN1_OBJECT_value(eku, i), 1);
+        ext_key_usage->Set(Integer::New(i), String::New(buf));
+      }
+
+      sk_ASN1_OBJECT_pop_free(eku, ASN1_OBJECT_free);
+      info->Set(ext_key_usage_symbol, ext_key_usage);
+    }
+
     X509_free(peer_cert);
   }
   return scope.Close(info);
@@ -703,53 +961,50 @@ Handle<Value> Connection::GetPeerCertificate(const Arguments& args) {
 
 Handle<Value> Connection::Start(const Arguments& args) {
   HandleScope scope;
-  int rv;
 
-  Connection *ss = ObjectWrap::Unwrap<Connection>(args.Holder());
+  Connection *ss = Connection::Unwrap(args);
 
   if (!SSL_is_init_finished(ss->ssl_)) {
+    int rv;
     if (ss->is_server_) {
-      rv = serr(ss->ssl_, "SSL_accept:Start", SSL_accept(ss->ssl_));
+      rv = SSL_accept(ss->ssl_);
+      ss->HandleSSLError("SSL_accept:Start", rv);
     } else {
-      rv = serr(ss->ssl_, "SSL_connect:Start", SSL_connect(ss->ssl_));
+      rv = SSL_connect(ss->ssl_);
+      ss->HandleSSLError("SSL_connect:Start", rv);
     }
 
-    if (rv < 0) {
-      return ThrowException(Exception::Error(v8::String::New(ssl_error_buf)));
-    }
-
-    if (rv == 1) {
-      return True();
-    } else {
-      return False();
-    }
+    return scope.Close(Integer::New(rv));
   }
 
-  return True();
+  return scope.Close(Integer::New(0));
 }
 
 
 Handle<Value> Connection::Shutdown(const Arguments& args) {
   HandleScope scope;
 
-  Connection *ss = ObjectWrap::Unwrap<Connection>(args.Holder());
+  Connection *ss = Connection::Unwrap(args);
 
   if (ss->ssl_ == NULL) return False();
-  int r = SSL_shutdown(ss->ssl_);
+  int rv = SSL_shutdown(ss->ssl_);
 
-  return scope.Close(Integer::New(r));
+  ss->HandleSSLError("SSL_shutdown", rv);
+  ss->SetShutdownFlags();
+
+  return scope.Close(Integer::New(rv));
 }
 
 
 Handle<Value> Connection::ReceivedShutdown(const Arguments& args) {
   HandleScope scope;
 
-  Connection *ss = ObjectWrap::Unwrap<Connection>(args.Holder());
+  Connection *ss = Connection::Unwrap(args);
 
   if (ss->ssl_ == NULL) return False();
   int r = SSL_get_shutdown(ss->ssl_);
 
-  if (r | SSL_RECEIVED_SHUTDOWN) return True();
+  if (r & SSL_RECEIVED_SHUTDOWN) return True();
 
   return False();
 }
@@ -757,7 +1012,9 @@ Handle<Value> Connection::ReceivedShutdown(const Arguments& args) {
 
 Handle<Value> Connection::IsInitFinished(const Arguments& args) {
   HandleScope scope;
-  Connection *ss = ObjectWrap::Unwrap<Connection>(args.Holder());
+
+  Connection *ss = Connection::Unwrap(args);
+
   if (ss->ssl_ == NULL) return False();
   return SSL_is_init_finished(ss->ssl_) ? True() : False();
 }
@@ -766,7 +1023,7 @@ Handle<Value> Connection::IsInitFinished(const Arguments& args) {
 Handle<Value> Connection::VerifyError(const Arguments& args) {
   HandleScope scope;
 
-  Connection *ss = ObjectWrap::Unwrap<Connection>(args.Holder());
+  Connection *ss = Connection::Unwrap(args);
 
   if (ss->ssl_ == NULL) return Null();
 
@@ -910,7 +1167,8 @@ Handle<Value> Connection::VerifyError(const Arguments& args) {
 Handle<Value> Connection::GetCurrentCipher(const Arguments& args) {
   HandleScope scope;
 
-  Connection *ss = ObjectWrap::Unwrap<Connection>(args.Holder());
+  Connection *ss = Connection::Unwrap(args);
+
   OPENSSL_CONST SSL_CIPHER *c;
 
   if ( ss->ssl_ == NULL ) return Undefined();
@@ -927,7 +1185,7 @@ Handle<Value> Connection::GetCurrentCipher(const Arguments& args) {
 Handle<Value> Connection::Close(const Arguments& args) {
   HandleScope scope;
 
-  Connection *ss = ObjectWrap::Unwrap<Connection>(args.Holder());
+  Connection *ss = Connection::Unwrap(args);
 
   if (ss->ssl_ != NULL) {
     SSL_free(ss->ssl_);
@@ -1149,9 +1407,9 @@ class Cipher : public ObjectWrap {
     EVP_CIPHER_CTX_init(&ctx);
     EVP_CipherInit(&ctx,cipher,(unsigned char *)key,(unsigned char *)iv, true);
     if (!EVP_CIPHER_CTX_set_key_length(&ctx,key_len)) {
-    	fprintf(stderr, "node-crypto : Invalid key length %d\n", key_len);
-    	EVP_CIPHER_CTX_cleanup(&ctx);
-    	return false;
+      fprintf(stderr, "node-crypto : Invalid key length %d\n", key_len);
+      EVP_CIPHER_CTX_cleanup(&ctx);
+      return false;
     }
     initialised_ = true;
     return true;
@@ -1169,15 +1427,15 @@ class Cipher : public ObjectWrap {
       return false;
     }
     if (EVP_CIPHER_iv_length(cipher)!=iv_len) {
-    	fprintf(stderr, "node-crypto : Invalid IV length %d\n", iv_len);
+      fprintf(stderr, "node-crypto : Invalid IV length %d\n", iv_len);
       return false;
     }
     EVP_CIPHER_CTX_init(&ctx);
     EVP_CipherInit(&ctx,cipher,(unsigned char *)key,(unsigned char *)iv, true);
     if (!EVP_CIPHER_CTX_set_key_length(&ctx,key_len)) {
-    	fprintf(stderr, "node-crypto : Invalid key length %d\n", key_len);
-    	EVP_CIPHER_CTX_cleanup(&ctx);
-    	return false;
+      fprintf(stderr, "node-crypto : Invalid key length %d\n", key_len);
+      EVP_CIPHER_CTX_cleanup(&ctx);
+      return false;
     }
     initialised_ = true;
     return true;
@@ -1225,6 +1483,7 @@ class Cipher : public ObjectWrap {
         "Must give cipher-type, key")));
     }
 
+    ASSERT_IS_STRING_OR_BUFFER(args[1]);
     ssize_t key_buf_len = DecodeBytes(args[1], BINARY);
 
     if (key_buf_len < 0) {
@@ -1252,7 +1511,7 @@ class Cipher : public ObjectWrap {
 
   static Handle<Value> CipherInitIv(const Arguments& args) {
     Cipher *cipher = ObjectWrap::Unwrap<Cipher>(args.This());
-		
+
     HandleScope scope;
 
     cipher->incomplete_base64=NULL;
@@ -1261,6 +1520,8 @@ class Cipher : public ObjectWrap {
       return ThrowException(Exception::Error(String::New(
         "Must give cipher-type, key, and iv as argument")));
     }
+
+    ASSERT_IS_STRING_OR_BUFFER(args[1]);
     ssize_t key_len = DecodeBytes(args[1], BINARY);
 
     if (key_len < 0) {
@@ -1268,6 +1529,7 @@ class Cipher : public ObjectWrap {
       return ThrowException(exception);
     }
 
+    ASSERT_IS_STRING_OR_BUFFER(args[2]);
     ssize_t iv_len = DecodeBytes(args[2], BINARY);
 
     if (iv_len < 0) {
@@ -1284,7 +1546,7 @@ class Cipher : public ObjectWrap {
     assert(iv_written == iv_len);
 
     String::Utf8Value cipherType(args[0]->ToString());
-    	
+
     bool r = cipher->CipherInitIv(*cipherType, key_buf,key_len,iv_buf,iv_len);
 
     delete [] key_buf;
@@ -1297,11 +1559,12 @@ class Cipher : public ObjectWrap {
     return args.This();
   }
 
-
   static Handle<Value> CipherUpdate(const Arguments& args) {
     Cipher *cipher = ObjectWrap::Unwrap<Cipher>(args.This());
 
     HandleScope scope;
+
+    ASSERT_IS_STRING_OR_BUFFER(args[0]);
 
     enum encoding enc = ParseEncoding(args[1]);
     ssize_t len = DecodeBytes(args[0], enc);
@@ -1337,19 +1600,19 @@ class Cipher : public ObjectWrap {
     if (out_len==0) {
       outString=String::New("");
     } else {
-    	if (args.Length() <= 2 || !args[2]->IsString()) {
-	      // Binary
-	      outString = Encode(out, out_len, BINARY);
-	    } else {
-	      char* out_hexdigest;
-	      int out_hex_len;
-	      String::Utf8Value encoding(args[2]->ToString());
-	      if (strcasecmp(*encoding, "hex") == 0) {
-	        // Hex encoding
-	        HexEncode(out, out_len, &out_hexdigest, &out_hex_len);
-	        outString = Encode(out_hexdigest, out_hex_len, BINARY);
-	        delete [] out_hexdigest;
-	      } else if (strcasecmp(*encoding, "base64") == 0) {
+      if (args.Length() <= 2 || !args[2]->IsString()) {
+        // Binary
+        outString = Encode(out, out_len, BINARY);
+      } else {
+        char* out_hexdigest;
+        int out_hex_len;
+        String::Utf8Value encoding(args[2]->ToString());
+        if (strcasecmp(*encoding, "hex") == 0) {
+          // Hex encoding
+          HexEncode(out, out_len, &out_hexdigest, &out_hex_len);
+          outString = Encode(out_hexdigest, out_hex_len, BINARY);
+          delete [] out_hexdigest;
+        } else if (strcasecmp(*encoding, "base64") == 0) {
           // Base64 encoding
           // Check to see if we need to add in previous base64 overhang
           if (cipher->incomplete_base64!=NULL){
@@ -1376,16 +1639,16 @@ class Cipher : public ObjectWrap {
             out[out_len]=0;
           }
 
-	        base64(out, out_len, &out_hexdigest, &out_hex_len);
-	        outString = Encode(out_hexdigest, out_hex_len, BINARY);
-	        delete [] out_hexdigest;
-	      } else if (strcasecmp(*encoding, "binary") == 0) {
-	        outString = Encode(out, out_len, BINARY);
-	      } else {
+          base64(out, out_len, &out_hexdigest, &out_hex_len);
+          outString = Encode(out_hexdigest, out_hex_len, BINARY);
+          delete [] out_hexdigest;
+        } else if (strcasecmp(*encoding, "binary") == 0) {
+          outString = Encode(out, out_len, BINARY);
+        } else {
           fprintf(stderr, "node-crypto : Cipher .update encoding "
                           "can be binary, hex or base64\n");
-	      }
-	    }
+        }
+      }
     }
 
     if (out) delete [] out;
@@ -1421,6 +1684,19 @@ class Cipher : public ObjectWrap {
         outString = Encode(out_hexdigest, out_hex_len, BINARY);
         delete [] out_hexdigest;
       } else if (strcasecmp(*encoding, "base64") == 0) {
+        // Check to see if we need to add in previous base64 overhang
+        if (cipher->incomplete_base64!=NULL){
+          unsigned char* complete_base64 = new unsigned char[out_len+cipher->incomplete_base64_len+1];
+          memcpy(complete_base64, cipher->incomplete_base64, cipher->incomplete_base64_len);
+          memcpy(&complete_base64[cipher->incomplete_base64_len], out_value, out_len);
+          delete [] out_value;
+
+          delete [] cipher->incomplete_base64;
+          cipher->incomplete_base64=NULL;
+
+          out_value=complete_base64;
+          out_len += cipher->incomplete_base64_len;
+        }
         base64(out_value, out_len, &out_hexdigest, &out_hex_len);
         outString = Encode(out_hexdigest, out_hex_len, BINARY);
         delete [] out_hexdigest;
@@ -1440,8 +1716,10 @@ class Cipher : public ObjectWrap {
     initialised_ = false;
   }
 
-  ~Cipher ()
-  {
+  ~Cipher () {
+    if (initialised_) {
+      EVP_CIPHER_CTX_cleanup(&ctx);
+    }
   }
 
  private:
@@ -1501,9 +1779,9 @@ class Decipher : public ObjectWrap {
                    (unsigned char *)(iv),
                    false);
     if (!EVP_CIPHER_CTX_set_key_length(&ctx,key_len)) {
-    	fprintf(stderr, "node-crypto : Invalid key length %d\n", key_len);
-    	EVP_CIPHER_CTX_cleanup(&ctx);
-    	return false;
+      fprintf(stderr, "node-crypto : Invalid key length %d\n", key_len);
+      EVP_CIPHER_CTX_cleanup(&ctx);
+      return false;
     }
     initialised_ = true;
     return true;
@@ -1521,7 +1799,7 @@ class Decipher : public ObjectWrap {
       return false;
     }
     if (EVP_CIPHER_iv_length(cipher_) != iv_len) {
-    	fprintf(stderr, "node-crypto : Invalid IV length %d\n", iv_len);
+      fprintf(stderr, "node-crypto : Invalid IV length %d\n", iv_len);
       return false;
     }
     EVP_CIPHER_CTX_init(&ctx);
@@ -1531,9 +1809,9 @@ class Decipher : public ObjectWrap {
                    (unsigned char *)(iv),
                    false);
     if (!EVP_CIPHER_CTX_set_key_length(&ctx,key_len)) {
-    	fprintf(stderr, "node-crypto : Invalid key length %d\n", key_len);
-    	EVP_CIPHER_CTX_cleanup(&ctx);
-    	return false;
+      fprintf(stderr, "node-crypto : Invalid key length %d\n", key_len);
+      EVP_CIPHER_CTX_cleanup(&ctx);
+      return false;
     }
     initialised_ = true;
     return true;
@@ -1575,7 +1853,7 @@ class Decipher : public ObjectWrap {
 
   static Handle<Value> DecipherInit(const Arguments& args) {
     Decipher *cipher = ObjectWrap::Unwrap<Decipher>(args.This());
-		
+
     HandleScope scope;
 
     cipher->incomplete_utf8=NULL;
@@ -1586,6 +1864,7 @@ class Decipher : public ObjectWrap {
         "Must give cipher-type, key as argument")));
     }
 
+    ASSERT_IS_STRING_OR_BUFFER(args[1]);
     ssize_t key_len = DecodeBytes(args[1], BINARY);
 
     if (key_len < 0) {
@@ -1598,7 +1877,7 @@ class Decipher : public ObjectWrap {
     assert(key_written == key_len);
 
     String::Utf8Value cipherType(args[0]->ToString());
-    	
+
     bool r = cipher->DecipherInit(*cipherType, key_buf,key_len);
 
     delete [] key_buf;
@@ -1612,7 +1891,7 @@ class Decipher : public ObjectWrap {
 
   static Handle<Value> DecipherInitIv(const Arguments& args) {
     Decipher *cipher = ObjectWrap::Unwrap<Decipher>(args.This());
-		
+
     HandleScope scope;
 
     cipher->incomplete_utf8=NULL;
@@ -1623,6 +1902,7 @@ class Decipher : public ObjectWrap {
         "Must give cipher-type, key, and iv as argument")));
     }
 
+    ASSERT_IS_STRING_OR_BUFFER(args[1]);
     ssize_t key_len = DecodeBytes(args[1], BINARY);
 
     if (key_len < 0) {
@@ -1630,6 +1910,7 @@ class Decipher : public ObjectWrap {
       return ThrowException(exception);
     }
 
+    ASSERT_IS_STRING_OR_BUFFER(args[2]);
     ssize_t iv_len = DecodeBytes(args[2], BINARY);
 
     if (iv_len < 0) {
@@ -1646,7 +1927,7 @@ class Decipher : public ObjectWrap {
     assert(iv_written == iv_len);
 
     String::Utf8Value cipherType(args[0]->ToString());
-    	
+
     bool r = cipher->DecipherInitIv(*cipherType, key_buf,key_len,iv_buf,iv_len);
 
     delete [] key_buf;
@@ -1663,6 +1944,8 @@ class Decipher : public ObjectWrap {
     HandleScope scope;
 
     Decipher *cipher = ObjectWrap::Unwrap<Decipher>(args.This());
+
+    ASSERT_IS_STRING_OR_BUFFER(args[0]);
 
     ssize_t len = DecodeBytes(args[0], BINARY);
     if (len < 0) {
@@ -1884,7 +2167,11 @@ class Decipher : public ObjectWrap {
     initialised_ = false;
   }
 
-  ~Decipher () { }
+  ~Decipher () {
+    if (initialised_) {
+      EVP_CIPHER_CTX_cleanup(&ctx);
+    }
+  }
 
  private:
 
@@ -1965,6 +2252,7 @@ class Hmac : public ObjectWrap {
         "Must give hashtype string as argument")));
     }
 
+    ASSERT_IS_STRING_OR_BUFFER(args[1]);
     ssize_t len = DecodeBytes(args[1], BINARY);
 
     if (len < 0) {
@@ -1994,6 +2282,7 @@ class Hmac : public ObjectWrap {
 
     HandleScope scope;
 
+    ASSERT_IS_STRING_OR_BUFFER(args[0]);
     enum encoding enc = ParseEncoding(args[1]);
     ssize_t len = DecodeBytes(args[0], enc);
 
@@ -2003,7 +2292,7 @@ class Hmac : public ObjectWrap {
     }
 
     int r;
-	
+
     if( Buffer::HasInstance(args[0])) {
       Local<Object> buffer_obj = args[0]->ToObject();
       char *buffer_data = Buffer::Data(buffer_obj);
@@ -2072,7 +2361,11 @@ class Hmac : public ObjectWrap {
     initialised_ = false;
   }
 
-  ~Hmac () { }
+  ~Hmac () {
+    if (initialised_) {
+      HMAC_CTX_cleanup(&ctx);
+    }
+  }
 
  private:
 
@@ -2141,6 +2434,7 @@ class Hash : public ObjectWrap {
 
     Hash *hash = ObjectWrap::Unwrap<Hash>(args.This());
 
+    ASSERT_IS_STRING_OR_BUFFER(args[0]);
     enum encoding enc = ParseEncoding(args[1]);
     ssize_t len = DecodeBytes(args[0], enc);
 
@@ -2227,7 +2521,11 @@ class Hash : public ObjectWrap {
     initialised_ = false;
   }
 
-  ~Hash () { }
+  ~Hash () {
+    if (initialised_) {
+      EVP_MD_CTX_cleanup(&mdctx);
+    }
+  }
 
  private:
 
@@ -2332,6 +2630,7 @@ class Sign : public ObjectWrap {
 
     HandleScope scope;
 
+    ASSERT_IS_STRING_OR_BUFFER(args[0]);
     enum encoding enc = ParseEncoding(args[1]);
     ssize_t len = DecodeBytes(args[0], enc);
 
@@ -2378,6 +2677,7 @@ class Sign : public ObjectWrap {
     md_len = 8192; // Maximum key size is 8192 bits
     md_value = new unsigned char[md_len];
 
+    ASSERT_IS_STRING_OR_BUFFER(args[0]);
     ssize_t len = DecodeBytes(args[0], BINARY);
 
     if (len < 0) {
@@ -2430,7 +2730,11 @@ class Sign : public ObjectWrap {
     initialised_ = false;
   }
 
-  ~Sign () { }
+  ~Sign () {
+    if (initialised_) {
+      EVP_MD_CTX_cleanup(&mdctx);
+    }
+  }
 
  private:
 
@@ -2479,29 +2783,54 @@ class Verify : public ObjectWrap {
   int VerifyFinal(char* key_pem, int key_pemLen, unsigned char* sig, int siglen) {
     if (!initialised_) return 0;
 
+    EVP_PKEY* pkey = NULL;
     BIO *bp = NULL;
-    EVP_PKEY* pkey;
-    X509 *x509;
+    X509 *x509 = NULL;
+    int r = 0;
 
     bp = BIO_new(BIO_s_mem());
-    if(!BIO_write(bp, key_pem, key_pemLen)) return 0;
-
-    x509 = PEM_read_bio_X509(bp, NULL, NULL, NULL );
-    if (x509==NULL) return 0;
-
-    pkey=X509_get_pubkey(x509);
-    if (pkey==NULL) return 0;
-
-    int r = EVP_VerifyFinal(&mdctx, sig, siglen, pkey);
-    EVP_PKEY_free (pkey);
-
-    if (r != 1) {
-      ERR_print_errors_fp (stderr);
+    if (bp == NULL) {
+      ERR_print_errors_fp(stderr);
+      return 0;
     }
-    X509_free(x509);
-    BIO_free(bp);
+    if(!BIO_write(bp, key_pem, key_pemLen)) {
+      ERR_print_errors_fp(stderr);
+      return 0;
+    }
+
+    // Check if this is a PKCS#8 public key before trying as X.509
+    if (strncmp(key_pem, PUBLIC_KEY_PFX, PUBLIC_KEY_PFX_LEN) == 0) {
+      pkey = PEM_read_bio_PUBKEY(bp, NULL, NULL, NULL);
+      if (pkey == NULL) {
+        ERR_print_errors_fp(stderr);
+        return 0;
+      }
+    } else {
+      // X.509 fallback
+      x509 = PEM_read_bio_X509(bp, NULL, NULL, NULL);
+      if (x509 == NULL) {
+        ERR_print_errors_fp(stderr);
+        return 0;
+      }
+
+      pkey = X509_get_pubkey(x509);
+      if (pkey == NULL) {
+        ERR_print_errors_fp(stderr);
+        return 0;
+      }
+    }
+
+    r = EVP_VerifyFinal(&mdctx, sig, siglen, pkey);
+
+    if(pkey != NULL)
+      EVP_PKEY_free (pkey);
+    if (x509 != NULL)
+      X509_free(x509);
+    if (bp != NULL)
+      BIO_free(bp);
     EVP_MD_CTX_cleanup(&mdctx);
     initialised_ = false;
+
     return r;
   }
 
@@ -2545,6 +2874,7 @@ class Verify : public ObjectWrap {
 
     Verify *verify = ObjectWrap::Unwrap<Verify>(args.This());
 
+    ASSERT_IS_STRING_OR_BUFFER(args[0]);
     enum encoding enc = ParseEncoding(args[1]);
     ssize_t len = DecodeBytes(args[0], enc);
 
@@ -2583,6 +2913,7 @@ class Verify : public ObjectWrap {
 
     Verify *verify = ObjectWrap::Unwrap<Verify>(args.This());
 
+    ASSERT_IS_STRING_OR_BUFFER(args[0]);
     ssize_t klen = DecodeBytes(args[0], BINARY);
 
     if (klen < 0) {
@@ -2594,7 +2925,7 @@ class Verify : public ObjectWrap {
     ssize_t kwritten = DecodeWrite(kbuf, klen, args[0], BINARY);
     assert(kwritten == klen);
 
-
+    ASSERT_IS_STRING_OR_BUFFER(args[1]);
     ssize_t hlen = DecodeBytes(args[1], BINARY);
 
     if (hlen < 0) {
@@ -2644,7 +2975,11 @@ class Verify : public ObjectWrap {
     initialised_ = false;
   }
 
-  ~Verify () { }
+  ~Verify () {
+    if (initialised_) {
+      EVP_MD_CTX_cleanup(&mdctx);
+    }
+  }
 
  private:
 
@@ -2655,9 +2990,6 @@ class Verify : public ObjectWrap {
 };
 
 
-
-
-
 void InitCrypto(Handle<Object> target) {
   HandleScope scope;
 
@@ -2666,6 +2998,14 @@ void InitCrypto(Handle<Object> target) {
   OpenSSL_add_all_digests();
   SSL_load_error_strings();
   ERR_load_crypto_strings();
+
+  // Turn off compression. Saves memory - do it in userland.
+#ifdef SSL_COMP_get_compression_methods
+  // Before OpenSSL 0.9.8 this was not possible.
+  STACK_OF(SSL_COMP)* comp_methods = SSL_COMP_get_compression_methods();
+  sk_SSL_COMP_zero(comp_methods);
+  assert(sk_SSL_COMP_num(comp_methods) == 0);
+#endif
 
   SecureContext::Initialize(target);
   Connection::Initialize(target);
@@ -2683,6 +3023,7 @@ void InitCrypto(Handle<Object> target) {
   fingerprint_symbol   = NODE_PSYMBOL("fingerprint");
   name_symbol       = NODE_PSYMBOL("name");
   version_symbol    = NODE_PSYMBOL("version");
+  ext_key_usage_symbol = NODE_PSYMBOL("ext_key_usage");
 }
 
 }  // namespace crypto

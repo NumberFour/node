@@ -1,9 +1,32 @@
 #!/usr/bin/env python
+
+# Copyright Joyent, Inc. and other Node contributors.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a
+# copy of this software and associated documentation files (the
+# "Software"), to deal in the Software without restriction, including
+# without limitation the rights to use, copy, modify, merge, publish,
+# distribute, sublicense, and/or sell copies of the Software, and to permit
+# persons to whom the Software is furnished to do so, subject to the
+# following conditions:
+#
+# The above copyright notice and this permission notice shall be included
+# in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+# NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+# DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+# OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+# USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 import re
 import Options
-import sys, os, shutil
+import sys, os, shutil, glob
+import Utils
 from Utils import cmd_output
-from os.path import join, dirname, abspath
+from os.path import join, dirname, abspath, normpath
 from logging import fatal
 
 cwd = os.getcwd()
@@ -38,6 +61,12 @@ def set_options(opt):
   opt.tool_options('compiler_cxx')
   opt.tool_options('compiler_cc')
   opt.tool_options('misc')
+  opt.add_option( '--libdir'
+		, action='store'
+		, type='string'
+		, default=False
+		, help='Install into this libdir [Default: ${PREFIX}/lib]'
+		)
   opt.add_option( '--debug'
                 , action='store_true'
                 , default=False
@@ -100,11 +129,32 @@ def set_options(opt):
                 , dest='shared_v8_libname'
                 )
 
-  opt.add_option( '--oprofile'
+  opt.add_option( '--openssl-includes'
+                , action='store'
+                , default=False
+                , help='A directory to search for the OpenSSL includes'
+                , dest='openssl_includes'
+                )
+
+  opt.add_option( '--openssl-libpath'
+                , action='store'
+                , default=False
+                , help="A directory to search for the OpenSSL libraries"
+                , dest='openssl_libpath'
+                )
+
+  opt.add_option( '--no-ssl2'
                 , action='store_true'
                 , default=False
-                , help="add oprofile support"
-                , dest='use_oprofile'
+                , help="Disable OpenSSL v2"
+                , dest='openssl_nov2'
+                )
+
+  opt.add_option( '--gdb'
+                , action='store_true'
+                , default=False
+                , help="add gdb support"
+                , dest='use_gdbjit'
                 )
 
 
@@ -151,6 +201,13 @@ def set_options(opt):
                 , dest='shared_libev_libpath'
                 )
 
+  opt.add_option( '--with-dtrace'
+                , action='store_true'
+                , default=False
+                , help='Build with DTrace (experimental)'
+                , dest='dtrace'
+                )
+ 
 
   opt.add_option( '--product-type'
                 , action='store'
@@ -179,8 +236,13 @@ def configure(conf):
 
   o = Options.options
 
+  if o.libdir:
+    conf.env['LIBDIR'] = o.libdir
+  else:
+    conf.env['LIBDIR'] = conf.env['PREFIX'] + '/lib'
+
   conf.env["USE_DEBUG"] = o.debug
-  # Snapshot building does noet seem to work on mingw32
+  # Snapshot building does noet seem to work on cygwin and mingw32
   conf.env["SNAPSHOT_V8"] = not o.without_snapshot and not sys.platform.startswith("win32")
   if sys.platform.startswith("sunos"):
     conf.env["SNAPSHOT_V8"] = False
@@ -190,10 +252,7 @@ def configure(conf):
   conf.env["USE_SHARED_CARES"] = o.shared_cares or o.shared_cares_includes or o.shared_cares_libpath
   conf.env["USE_SHARED_LIBEV"] = o.shared_libev or o.shared_libev_includes or o.shared_libev_libpath
 
-  conf.env["USE_OPROFILE"] = o.use_oprofile
-
-  if o.use_oprofile:
-    conf.check(lib=['bfd', 'opagent'], uselib_store="OPROFILE")
+  conf.env["USE_GDBJIT"] = o.use_gdbjit
 
   conf.check(lib='dl', uselib_store='DL')
   if not sys.platform.startswith("sunos") and not sys.platform.startswith("cygwin") and not sys.platform.startswith("win32"):
@@ -206,6 +265,14 @@ def configure(conf):
   #if Options.options.debug:
   #  conf.check(lib='profiler', uselib_store='PROFILER')
 
+  if Options.options.dtrace:
+    if not sys.platform.startswith("sunos"):
+      conf.fatal('DTrace support only currently available on Solaris')
+
+    conf.find_program('dtrace', var='DTRACE', mandatory=True)
+    conf.env["USE_DTRACE"] = True
+    conf.env.append_value("CXXFLAGS", "-DHAVE_DTRACE=1")
+
   if Options.options.efence:
     conf.check(lib='efence', libpath=['/usr/lib', '/usr/local/lib'], uselib_store='EFENCE')
 
@@ -217,23 +284,57 @@ def configure(conf):
        conf.fatal("Install the libexecinfo port from /usr/ports/devel/libexecinfo.")
 
   if not Options.options.without_ssl:
-    if conf.check_cfg(package='openssl',
-                      args='--cflags --libs',
-                      uselib_store='OPENSSL'):
+    # Don't override explicitly supplied openssl paths with pkg-config results.
+    explicit_openssl = o.openssl_includes or o.openssl_libpath
+
+    # Disable ssl v2 methods
+    if o.openssl_nov2:
+      conf.env.append_value("CPPFLAGS", "-DOPENSSL_NO_SSL2=1")
+
+    if not explicit_openssl and conf.check_cfg(package='openssl',
+                                               args='--cflags --libs',
+                                               uselib_store='OPENSSL'):
       Options.options.use_openssl = conf.env["USE_OPENSSL"] = True
       conf.env.append_value("CPPFLAGS", "-DHAVE_OPENSSL=1")
     else:
-      libssl = conf.check_cc(lib=['ssl', 'crypto'],
+      if o.openssl_libpath: 
+        openssl_libpath = [o.openssl_libpath]
+      elif not sys.platform.startswith('win32'):
+        openssl_libpath = ['/usr/lib', '/usr/local/lib', '/opt/local/lib', '/usr/sfw/lib']
+      else:
+        openssl_libpath = [normpath(join(cwd, '../openssl'))]
+
+      if o.openssl_includes: 
+        openssl_includes = [o.openssl_includes]
+      elif not sys.platform.startswith('win32'):
+        openssl_includes = [];
+      else:
+        openssl_includes = [normpath(join(cwd, '../openssl/include'))];
+
+      openssl_lib_names = ['ssl', 'crypto']
+      if sys.platform.startswith('win32'):
+        openssl_lib_names += ['ws2_32', 'gdi32']
+
+      libssl = conf.check_cc(lib=openssl_lib_names,
                              header_name='openssl/ssl.h',
                              function_name='SSL_library_init',
-                             libpath=['/usr/lib', '/usr/local/lib', '/opt/local/lib', '/usr/sfw/lib'],
+                             includes=openssl_includes,
+                             libpath=openssl_libpath,
                              uselib_store='OPENSSL')
+
       libcrypto = conf.check_cc(lib='crypto',
                                 header_name='openssl/crypto.h',
+                                includes=openssl_includes,
+                                libpath=openssl_libpath,
                                 uselib_store='OPENSSL')
+
       if libcrypto and libssl:
         conf.env["USE_OPENSSL"] = Options.options.use_openssl = True
         conf.env.append_value("CPPFLAGS", "-DHAVE_OPENSSL=1")
+      elif sys.platform.startswith('win32'):
+        conf.fatal("Could not autodetect OpenSSL support. " +
+                   "Use the --openssl-libpath and --openssl-includes options to set the search path. " +
+                   "Use configure --without-ssl to disable this message.")
       else:
         conf.fatal("Could not autodetect OpenSSL support. " +
                    "Make sure OpenSSL development packages are installed. " +
@@ -259,6 +360,8 @@ def configure(conf):
       conf.fatal("Cannot find socket library")
     if not conf.check(lib='nsl', uselib_store="NSL"):
       conf.fatal("Cannot find nsl library")
+    if not conf.check(lib='kstat', uselib_store="KSTAT"):
+      conf.fatal("Cannot find kstat library")
 
   conf.sub_config('deps/libeio')
 
@@ -430,7 +533,6 @@ def configure(conf):
 
   # Configure default variant
   conf.setenv('default')
-  conf.env.append_value('CPPFLAGS', '-DNDEBUG')
   default_compile_flags = ['-g', '-O3']
   conf.env.append_value('CCFLAGS', default_compile_flags)
   conf.env.append_value('CXXFLAGS', default_compile_flags)
@@ -453,6 +555,8 @@ def v8_cmd(bld, variant):
   if bld.env['DEST_CPU']:
     arch = "arch="+bld.env['DEST_CPU']
 
+  toolchain = "gcc"
+
   if variant == "default":
     mode = "release"
   else:
@@ -463,12 +567,7 @@ def v8_cmd(bld, variant):
   else:
     snapshot = ""
 
-  if bld.env["USE_OPROFILE"]:
-    profile = "prof=oprofile"
-  else:
-    profile = ""
-
-  cmd_R = sys.executable + ' "%s" -j %d -C "%s" -Y "%s" visibility=default mode=%s %s library=static %s %s'
+  cmd_R = sys.executable + ' "%s" -j %d -C "%s" -Y "%s" visibility=default mode=%s %s toolchain=%s library=static %s'
 
   cmd = cmd_R % ( scons
                 , Options.options.jobs
@@ -476,11 +575,16 @@ def v8_cmd(bld, variant):
                 , safe_path(v8dir_src)
                 , mode
                 , arch
+                , toolchain
                 , snapshot
-		, profile
                 )
 
-  if sys.platform.startswith("sunos"): cmd += ' toolchain=gcc'
+  if bld.env["USE_GDBJIT"]:
+    cmd += ' gdbjit=on '
+
+  if sys.platform.startswith("sunos"):
+    cmd += ' toolchain=gcc strictaliasing=off'
+
 
 
   return ("echo '%s' && " % cmd) + cmd
@@ -548,10 +652,12 @@ def build(bld):
   http_parser.install_path = None
   if bld.env["USE_DEBUG"]:
     http_parser.clone("debug")
+  if product_type_is_lib:
+    http_parser.ccflags = '-fPIC'
 
   ### src/native.cc
   def make_macros(loc, content):
-    f = open(loc, 'w')
+    f = open(loc, 'a')
     f.write(content)
     f.close
 
@@ -565,9 +671,32 @@ def build(bld):
     "macros.py"
   )
 
+  ### We need to truncate the macros.py file
+  f = open(macros_loc_debug, 'w')
+  f.close
+  f = open(macros_loc_default, 'w')
+  f.close
+
   make_macros(macros_loc_debug, "")  # leave debug(x) as is in debug build
   # replace debug(x) with nothing in release build
   make_macros(macros_loc_default, "macro debug(x) = ;\n")
+  make_macros(macros_loc_default, "macro assert(x) = ;\n")
+
+  if not bld.env["USE_DTRACE"]:
+    probes = [
+      'DTRACE_HTTP_CLIENT_REQUEST',
+      'DTRACE_HTTP_CLIENT_RESPONSE',
+      'DTRACE_HTTP_SERVER_REQUEST',
+      'DTRACE_HTTP_SERVER_RESPONSE',
+      'DTRACE_NET_SERVER_CONNECTION',
+      'DTRACE_NET_STREAM_END',
+      'DTRACE_NET_SOCKET_READ',
+      'DTRACE_NET_SOCKET_WRITE'
+    ]
+
+    for probe in probes:
+      make_macros(macros_loc_default, "macro %s(x) = ;\n" % probe)
+      make_macros(macros_loc_debug, "macro %s(x) = ;\n" % probe)
 
   def javascript_in_c(task):
     env = task.env
@@ -598,16 +727,81 @@ def build(bld):
     native_cc_debug = native_cc.clone("debug")
     native_cc_debug.rule = javascript_in_c_debug
 
-  native_cc.rule = javascript_in_c
+  native_cc.rule = javascript_in_c_debug
+
+  if bld.env["USE_DTRACE"]:
+    dtrace = bld.new_task_gen(
+      name   = "dtrace",
+      source = "src/node_provider.d",
+      target = "src/node_provider.h",
+      rule   = "%s -x nolibs -h -o ${TGT} -s ${SRC}" % (bld.env.DTRACE),
+      before = "cxx",
+    )
+
+    if bld.env["USE_DEBUG"]:
+      dtrace_g = dtrace.clone("debug")
+
+    bld.install_files('${LIBDIR}/dtrace', 'src/node.d')
+
+    if sys.platform.startswith("sunos"):
+      #
+      # The USDT DTrace provider works slightly differently on Solaris than on
+      # the Mac; on Solaris, any objects that have USDT DTrace probes must be
+      # post-processed with the DTrace command.  (This is not true on the
+      # Mac, which has first-class linker support for USDT probes.)  On
+      # Solaris, we must therefore post-process our object files.  Waf doesn't
+      # seem to really have a notion for this, so we inject a task after
+      # compiling and before linking, and then find all of the node object
+      # files and shuck them off to dtrace (which will modify them in place
+      # as appropriate).
+      #
+      def dtrace_postprocess(task):
+        abspath = bld.srcnode.abspath(bld.env_of_name(task.env.variant()))
+        objs = glob.glob(abspath + 'src/*.o')
+        source = task.inputs[0].srcpath(task.env)
+        target = task.outputs[0].srcpath(task.env)
+        cmd = '%s -G -x nolibs -s %s -o %s %s' % (task.env.DTRACE,
+                                                  source,
+                                                  target,
+                                                  ' '.join(objs))
+        Utils.exec_command(cmd)
+
+      dtracepost = bld.new_task_gen(
+        name   = "dtrace-postprocess",
+        source = "src/node_provider.d",
+        target = "node_provider.o",
+        always = True,
+        before = "cxx_link",
+        after  = "cxx",
+        rule = dtrace_postprocess
+      )
+
+      t = join(bld.srcnode.abspath(bld.env_of_name("default")), dtracepost.target)
+      bld.env_of_name('default').append_value('LINKFLAGS', t)
+
+      #
+      # Note that for the same (mysterious) issue outlined above with respect
+      # to assigning the rule to native_cc/native_cc_debug, we must apply the
+      # rule to dtracepost/dtracepost_g only after they have been cloned.  We
+      # also must put node_provider.o on the link line, but because we
+      # (apparently?) lack LINKFLAGS in debug, we (shamelessly) stowaway on
+      # LINKFLAGS_V8_G.
+      #
+      if bld.env["USE_DEBUG"]:
+        dtracepost_g = dtracepost.clone("debug")
+        dtracepost_g.rule = dtrace_postprocess
+        t = join(bld.srcnode.abspath(bld.env_of_name("debug")), dtracepost.target)
+        bld.env_of_name("debug").append_value('LINKFLAGS_V8_G', t)
+
 
   ### node lib
   node = bld.new_task_gen("cxx", product_type)
   node.name         = "node"
   node.target       = "node"
-  node.uselib = 'RT EV OPENSSL CARES EXECINFO DL KVM SOCKET NSL UTIL OPROFILE'
+  node.uselib = 'RT EV OPENSSL CARES EXECINFO DL KVM SOCKET NSL KSTAT UTIL OPROFILE'
   node.add_objects = 'eio http_parser'
   if product_type_is_lib:
-    node.install_path = '${PREFIX}/lib'
+    node.install_path = '${LIBDIR}'
   else:
     node.install_path = '${PREFIX}/bin'
   node.chmod = 0755
@@ -619,18 +813,26 @@ def build(bld):
     src/node_http_parser.cc
     src/node_net.cc
     src/node_io_watcher.cc
-    src/node_child_process.cc
     src/node_constants.cc
     src/node_cares.cc
     src/node_events.cc
     src/node_file.cc
     src/node_signal_watcher.cc
     src/node_stat_watcher.cc
-    src/node_stdio.cc
     src/node_timer.cc
     src/node_script.cc
     src/node_os.cc
+    src/node_dtrace.cc
+    src/node_string.cc
   """
+
+  if sys.platform.startswith("win32"):
+    node.source += " src/node_stdio_win32.cc "
+    node.source += " src/node_child_process_win32.cc "
+  else:
+    node.source += " src/node_stdio.cc "
+    node.source += " src/node_child_process.cc "
+
   node.source += bld.env["PLATFORM_FILE"]
   if not product_type_is_lib:
     node.source = 'src/node_main.cc '+node.source
@@ -657,14 +859,14 @@ def build(bld):
     bld.env.append_value('LINKFLAGS', '-Wl,--export-all-symbols')
     bld.env.append_value('LINKFLAGS', '-Wl,--out-implib,default/libnode.dll.a')
     bld.env.append_value('LINKFLAGS', '-Wl,--output-def,default/libnode.def')
-    bld.install_files('${PREFIX}/lib', "build/default/libnode.*")
+    bld.install_files('${LIBDIR}', "build/default/libnode.*")
 
   def subflags(program):
     x = { 'CCFLAGS'   : " ".join(program.env["CCFLAGS"]).replace('"', '\\"')
         , 'CPPFLAGS'  : " ".join(program.env["CPPFLAGS"]).replace('"', '\\"')
         , 'LIBFLAGS'  : " ".join(program.env["LIBFLAGS"]).replace('"', '\\"')
         , 'PREFIX'    : safe_path(program.env["PREFIX"])
-        , 'VERSION'   : '0.3.2' # FIXME should not be hard-coded, see NODE_VERSION_STRING in src/node_version.
+        , 'VERSION'   : '0.4.10' # FIXME should not be hard-coded, see NODE_VERSION_STRING in src/node_version.
         }
     return x
 
@@ -703,8 +905,8 @@ def build(bld):
     bld.install_files('${PREFIX}/share/man/man1/', 'doc/node.1')
 
   bld.install_files('${PREFIX}/bin/', 'tools/node-waf', chmod=0755)
-  bld.install_files('${PREFIX}/lib/node/wafadmin', 'tools/wafadmin/*.py')
-  bld.install_files('${PREFIX}/lib/node/wafadmin/Tools', 'tools/wafadmin/Tools/*.py')
+  bld.install_files('${LIBDIR}/node/wafadmin', 'tools/wafadmin/*.py')
+  bld.install_files('${LIBDIR}/node/wafadmin/Tools', 'tools/wafadmin/Tools/*.py')
 
   # create a pkg-config(1) file
   node_conf = bld.new_task_gen('subst', before="cxx")
@@ -712,7 +914,7 @@ def build(bld):
   node_conf.target = 'tools/nodejs.pc'
   node_conf.dict = subflags(node)
 
-  bld.install_files('${PREFIX}/lib/pkgconfig', 'tools/nodejs.pc')
+  bld.install_files('${LIBDIR}/pkgconfig', 'tools/nodejs.pc')
 
 def shutdown():
   Options.options.debug

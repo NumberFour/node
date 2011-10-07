@@ -1,14 +1,35 @@
-// Copyright 2009 Ryan Dahl <ry@tinyclouds.org>
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 #ifndef NODE_CHILD_PROCESS_H_
 #define NODE_CHILD_PROCESS_H_
 
 #include <node.h>
 #include <node_object_wrap.h>
+
 #include <v8.h>
 #include <ev.h>
 
 #ifdef __MINGW32__
-# include <windows.h> // HANDLE type
+# include <platform_win32.h> // HANDLE type
 #endif
 
 // ChildProcess is a thin wrapper around ev_child. It has the extra
@@ -64,13 +85,17 @@ class ChildProcess : ObjectWrap {
             char **env,
             int stdio_fds[3],
             int custom_fds[3],
-            bool do_setsid);
+            bool do_setsid,
+            int custom_uid,
+            char *custom_uname,
+            int custom_gid,
+            char *custom_gname);
 
   // Simple syscall wrapper. Does not disable the watcher. onexit will be
   // called still.
   int Kill(int sig);
 
-private:
+ private:
   void OnExit(int code);
 
 #ifdef __POSIX__ // Shouldn't this just move to node_child_process.cc?
@@ -94,7 +119,7 @@ private:
   static void watch(ChildProcess *child);
   static void CALLBACK watch_wait_callback(void *data, BOOLEAN didTimeout);
   static void notify_spawn_failure(ChildProcess *child);
-  static void notify_exit(ev_async *ev, int revent);
+  static void notify_exit(EV_P_ ev_async *ev, int revent);
   static int do_kill(ChildProcess *child, int sig);static void close_stdio_handles(ChildProcess *child);
 
   int pid_;

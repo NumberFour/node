@@ -16,13 +16,19 @@ method.  Here are the different string encodings;
 
 * `'ascii'` - for 7 bit ASCII data only.  This encoding method is very fast, and will
 strip the high bit if set.
+Note that this encoding converts a null character (`'\0'` or `'\u0000'`) into
+`0x20` (character code of a space). If you want to convert a null character
+into `0x00`, you should use `'utf8'`.
 
-* `'utf8'` - Unicode characters.  Many web pages and other document formats use UTF-8.
+* `'utf8'` - Multi byte encoded Unicode characters.  Many web pages and other document formats use UTF-8.
+
+* `'ucs2'` - 2-bytes, little endian encoded Unicode characters. It can encode
+only BMP(Basic Multilingual Plane, U+0000 - U+FFFF).
 
 * `'base64'` - Base64 string encoding.
 
 * `'binary'` - A way of encoding raw binary data into strings by using only
-the first 8 bits of each character. This encoding method is depreciated and
+the first 8 bits of each character. This encoding method is deprecated and
 should be avoided in favor of `Buffer` objects where possible. This encoding
 will be removed in future versions of Node.
 
@@ -43,8 +49,8 @@ Allocates a new buffer containing the given `str`.
 
 Writes `string` to the buffer at `offset` using the given encoding. Returns
 number of octets written.  If `buffer` did not contain enough space to fit
-the entire string it will write a partial amount of the string. In the case
-of `'utf8'` encoding, the method will not write partial characters.
+the entire string, it will write a partial amount of the string.
+The method will not write partial characters.
 
 Example: write a utf8 string into a buffer, then print it
 
@@ -52,7 +58,9 @@ Example: write a utf8 string into a buffer, then print it
     len = buf.write('\u00bd + \u00bc = \u00be', 0);
     console.log(len + " bytes: " + buf.toString('utf8', 0, len));
 
-    // 12 bytes: ½ + ¼ = ¾
+The number of characters written (which may be different than the number of
+bytes written) is set in `Buffer._charsWritten` and will be overwritten the
+next time `buf.write()` is called.
 
 
 ### buffer.toString(encoding, start=0, end=buffer.length)
@@ -118,7 +126,7 @@ buffer object.  It does not change when the contents of the buffer are changed.
 
 ### buffer.copy(targetBuffer, targetStart=0, sourceStart=0, sourceEnd=buffer.length)
 
-Does a memcpy() between buffers.
+Does copy between buffers. The source and target regions can be overlapped.
 
 Example: build two Buffers, then copy `buf1` from byte 16 through byte 19
 into `buf2`, starting at the 8th byte in `buf2`.

@@ -1,3 +1,24 @@
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 #include "node.h"
 #include "platform.h"
 
@@ -183,15 +204,19 @@ int Platform::GetCPUInfo(Local<Array> *cpus) {
 
   if (fpStat) {
     while (fgets(line, 511, fpStat) != NULL) {
-      if (strncmp(line, "cpu ", 4) == 0)
+      if (strncmp(line, "cpu ", 4) == 0) {
         continue;
-      else if (strncmp(line, "intr ", 5) == 0)
+      } else if (strncmp(line, "cpu", 3) != 0) {
         break;
+      }
+
       sscanf(line, "%*s %llu %llu %llu %llu %*llu %llu",
              &ticks_user, &ticks_nice, &ticks_sys, &ticks_idle, &ticks_intr);
       snprintf(speedPath, sizeof(speedPath),
                "/sys/devices/system/cpu/cpu%u/cpufreq/cpuinfo_max_freq", i);
+
       fpSpeed = fopen(speedPath, "r");
+
       if (fpSpeed) {
         if (fgets(line, 511, fpSpeed) != NULL) {
           sscanf(line, "%u", &cpuspeed);
@@ -199,6 +224,7 @@ int Platform::GetCPUInfo(Local<Array> *cpus) {
         }
         fclose(fpSpeed);
       }
+
       cpuinfo = Object::New();
       cputimes = Object::New();
       cputimes->Set(String::New("user"), Number::New(ticks_user * multiplier));

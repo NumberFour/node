@@ -1,18 +1,43 @@
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+#include <node.h>
 #include <node_buffer.h>
+
+#include <v8.h>
 
 #include <assert.h>
 #include <stdlib.h> // malloc, free
-#include <v8.h>
-
 #include <string.h> // memcpy
 
 #ifdef __MINGW32__
-# include <winsock2.h> // htons, htonl
-#else // __POSIX__
+# include "platform.h"
+# include <platform_win32_winsock.h> // htons, htonl
+#endif
+
+#ifdef __POSIX__
 # include <arpa/inet.h> // htons, htonl
 #endif
 
-#include <node.h>
 
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 
@@ -80,6 +105,8 @@ static size_t ByteLength (Handle<String> string, enum encoding enc) {
   } else if (enc == BASE64) {
     String::Utf8Value v(string);
     return base64_decoded_size(*v, v.length());
+  } else if (enc == UCS2) {
+    return string->Length() * 2;
   } else {
     return string->Length();
   }
@@ -107,6 +134,7 @@ Buffer* Buffer::New(size_t length) {
 
   Local<Value> arg = Integer::NewFromUnsigned(length);
   Local<Object> b = constructor_template->GetFunction()->NewInstance(1, &arg);
+  if (b.IsEmpty()) return NULL;
 
   return ObjectWrap::Unwrap<Buffer>(b);
 }
@@ -238,6 +266,15 @@ Handle<Value> Buffer::Utf8Slice(const Arguments &args) {
   SLICE_ARGS(args[0], args[1])
   char *data = parent->data_ + start;
   Local<String> string = String::New(data, end - start);
+  return scope.Close(string);
+}
+
+Handle<Value> Buffer::Ucs2Slice(const Arguments &args) {
+  HandleScope scope;
+  Buffer *parent = ObjectWrap::Unwrap<Buffer>(args.This());
+  SLICE_ARGS(args[0], args[1])
+  uint16_t *data = (uint16_t*)(parent->data_ + start);
+  Local<String> string = String::New(data, (end - start) / 2);
   return scope.Close(string);
 }
 
@@ -410,7 +447,15 @@ Handle<Value> Buffer::Utf8Write(const Arguments &args) {
 
   size_t offset = args[1]->Uint32Value();
 
-  if (s->Length() > 0 && offset >= buffer->length_) {
+  int length = s->Length();
+
+  if (length == 0) {
+    constructor_template->GetFunction()->Set(chars_written_sym,
+                                             Integer::New(0));
+    return scope.Close(Integer::New(0));
+  }
+
+  if (length > 0 && offset >= buffer->length_) {
     return ThrowException(Exception::TypeError(String::New(
             "Offset is out of bounds")));
   }
@@ -431,9 +476,52 @@ Handle<Value> Buffer::Utf8Write(const Arguments &args) {
   constructor_template->GetFunction()->Set(chars_written_sym,
                                            Integer::New(char_written));
 
-  if (written > 0 && p[written-1] == '\0') written--;
+  if (written > 0 && p[written-1] == '\0' && char_written == length) {
+    uint16_t last_char;
+    s->Write(&last_char, length - 1, 1, String::NO_HINTS);
+    if (last_char != 0 || written > s->Utf8Length()) {
+      written--;
+    }
+  }
 
   return scope.Close(Integer::New(written));
+}
+
+
+// var charsWritten = buffer.ucs2Write(string, offset, [maxLength]);
+Handle<Value> Buffer::Ucs2Write(const Arguments &args) {
+  HandleScope scope;
+  Buffer *buffer = ObjectWrap::Unwrap<Buffer>(args.This());
+
+  if (!args[0]->IsString()) {
+    return ThrowException(Exception::TypeError(String::New(
+            "Argument must be a string")));
+  }
+
+  Local<String> s = args[0]->ToString();
+
+  size_t offset = args[1]->Uint32Value();
+
+  if (s->Length() > 0 && offset >= buffer->length_) {
+    return ThrowException(Exception::TypeError(String::New(
+            "Offset is out of bounds")));
+  }
+
+  size_t max_length = args[2]->IsUndefined() ? buffer->length_ - offset
+                                             : args[2]->Uint32Value();
+  max_length = MIN(buffer->length_ - offset, max_length) / 2;
+
+  uint16_t* p = (uint16_t*)(buffer->data_ + offset);
+
+  int written = s->Write(p,
+                         0,
+                         max_length,
+                         String::HINT_MANY_WRITES_EXPECTED);
+
+  constructor_template->GetFunction()->Set(chars_written_sym,
+                                           Integer::New(written));
+
+  return scope.Close(Integer::New(written * 2));
 }
 
 
@@ -467,6 +555,10 @@ Handle<Value> Buffer::AsciiWrite(const Arguments &args) {
                               0,
                               max_length,
                               String::HINT_MANY_WRITES_EXPECTED);
+
+  constructor_template->GetFunction()->Set(chars_written_sym,
+                                           Integer::New(written));
+
   return scope.Close(Integer::New(written));
 }
 
@@ -554,6 +646,9 @@ Handle<Value> Buffer::Base64Write(const Arguments &args) {
     *dst++ = ((c & 0x03) << 6) | (d & 0x3F);
   }
 
+  constructor_template->GetFunction()->Set(chars_written_sym,
+                                           Integer::New(s.length()));
+
   return scope.Close(Integer::New(dst - start));
 }
 
@@ -579,9 +674,15 @@ Handle<Value> Buffer::BinaryWrite(const Arguments &args) {
 
   char *p = (char*)buffer->data_ + offset;
 
-  size_t towrite = MIN((unsigned long) s->Length(), buffer->length_ - offset);
+  size_t max_length = args[2]->IsUndefined() ? buffer->length_ - offset
+                                             : args[2]->Uint32Value();
+  max_length = MIN(s->Length(), MIN(buffer->length_ - offset, max_length));
 
-  int written = DecodeWrite(p, towrite, s, BINARY);
+  int written = DecodeWrite(p, max_length, s, BINARY);
+
+  constructor_template->GetFunction()->Set(chars_written_sym,
+                                           Integer::New(written));
+
   return scope.Close(Integer::New(written));
 }
 
@@ -604,6 +705,11 @@ Handle<Value> Buffer::ByteLength(const Arguments &args) {
 
 Handle<Value> Buffer::MakeFastBuffer(const Arguments &args) {
   HandleScope scope;
+
+  if (!Buffer::HasInstance(args[0])) {
+    return ThrowException(Exception::TypeError(String::New(
+            "First argument must be a Buffer")));
+  }
 
   Buffer *buffer = ObjectWrap::Unwrap<Buffer>(args[0]->ToObject());
   Local<Object> fast_buffer = args[1]->ToObject();;
@@ -648,6 +754,7 @@ void Buffer::Initialize(Handle<Object> target) {
   NODE_SET_PROTOTYPE_METHOD(constructor_template, "binarySlice", Buffer::BinarySlice);
   NODE_SET_PROTOTYPE_METHOD(constructor_template, "asciiSlice", Buffer::AsciiSlice);
   NODE_SET_PROTOTYPE_METHOD(constructor_template, "base64Slice", Buffer::Base64Slice);
+  NODE_SET_PROTOTYPE_METHOD(constructor_template, "ucs2Slice", Buffer::Ucs2Slice);
   // TODO NODE_SET_PROTOTYPE_METHOD(t, "utf16Slice", Utf16Slice);
   // copy
   NODE_SET_PROTOTYPE_METHOD(constructor_template, "utf8Slice", Buffer::Utf8Slice);
@@ -656,6 +763,7 @@ void Buffer::Initialize(Handle<Object> target) {
   NODE_SET_PROTOTYPE_METHOD(constructor_template, "asciiWrite", Buffer::AsciiWrite);
   NODE_SET_PROTOTYPE_METHOD(constructor_template, "binaryWrite", Buffer::BinaryWrite);
   NODE_SET_PROTOTYPE_METHOD(constructor_template, "base64Write", Buffer::Base64Write);
+  NODE_SET_PROTOTYPE_METHOD(constructor_template, "ucs2Write", Buffer::Ucs2Write);
   NODE_SET_PROTOTYPE_METHOD(constructor_template, "copy", Buffer::Copy);
 
   NODE_SET_METHOD(constructor_template->GetFunction(),

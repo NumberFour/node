@@ -1,3 +1,24 @@
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+// USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 var common = require('../common');
 var assert = require('assert');
 var debug = require('_debugger');
@@ -104,9 +125,10 @@ addTest(function (client, done) {
 addTest(function (client, done) {
   console.error("eval 2+2");
   client.reqEval("2+2", function (res) {
+    assert.ok(res.success);
     console.error(res);
-    assert.equal('4', res.text);
-    assert.equal(4, res.value);
+    assert.equal('4', res.body.text);
+    assert.equal(4, res.body.value);
     done();
   });
 });
@@ -126,23 +148,27 @@ function doTest(cb, done) {
 
   var didTryConnect = false;
   nodeProcess.stderr.setEncoding('utf8');
+  var b = ''
   nodeProcess.stderr.on('data', function (data) {
-    if (didTryConnect == false && /debugger/.test(data)) {
+    b += data;
+    if (didTryConnect == false && /debugger listening on port/.test(b)) {
       didTryConnect = true;
 
-      // Wait for some data before trying to connect
-      var c = new debug.Client();
-      process.stdout.write(">>> connecting...");
-      c.connect(debug.port)
-      c.on('ready', function () {
-        connectCount++;
-        console.log("ready!");
-        cb(c, function () {
-          console.error(">>> killing node process %d\n\n", nodeProcess.pid);
-          nodeProcess.kill();
-          done();
+      setTimeout(function() {
+        // Wait for some data before trying to connect
+        var c = new debug.Client();
+        process.stdout.write(">>> connecting...");
+        c.connect(debug.port)
+        c.on('ready', function () {
+          connectCount++;
+          console.log("ready!");
+          cb(c, function () {
+            console.error(">>> killing node process %d\n\n", nodeProcess.pid);
+            nodeProcess.kill();
+            done();
+          });
         });
-      });
+      }, 100);
     }
   });
 }

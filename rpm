@@ -1,0 +1,29 @@
+#! /bin/bash
+
+usage () {
+    echo "$0 - a script to build a rpm file for node."
+    echo "Usage: $0 <release>"
+}
+
+if [ -z "$1" ]; then
+    usage
+    exit 1
+fi
+
+set -e
+
+readonly BASEDIR=$(dirname $(readlink -f "$0"))
+readonly RELEASE="$1"
+readonly VERSION=$(git branch | cut -f2 -d' ' | tr -d '-' )
+
+mkdir -p ${BASEDIR}/{SOURCES,SPECS,RPMS,BUILD}
+
+echo "Will package ${VERSION}, release ${RELEASE}."
+git archive --prefix "node-${VERSION}/" HEAD | gzip >"${BASEDIR}/SOURCES/node-${VERSION}.tar.gz"
+cat ./node.spec | sed -e "s/@@@VERSION@@@/${VERSION}/g" -e "s/@@@RELEASE@@@/${RELEASE}/g" >"${BASEDIR}/SPECS/node.spec"
+
+echo "Build rpms"
+rpmbuild --verbose --define "_topdir ${BASEDIR}/" -bb "${BASEDIR}/SPECS/node.spec"
+
+echo "RPMS"
+find "${BASEDIR}/RPMS" -type f

@@ -4,10 +4,20 @@ The `net` module provides you with an asynchronous network wrapper. It contains
 methods for creating both servers and clients (called streams). You can include
 this module with `require("net");`
 
-### net.createServer(connectionListener)
+### net.createServer([options], [connectionListener])
 
 Creates a new TCP server. The `connectionListener` argument is
 automatically set as a listener for the `'connection'` event.
+
+`options` is an object with the following defaults:
+
+    { allowHalfOpen: false
+    }
+
+If `allowHalfOpen` is `true`, then the socket won't automatically send FIN
+packet when the other end of the socket sends a FIN packet. The socket becomes
+non-readable, but still writable. You should call the end() method explicitly.
+See `'end'` event for more information.
 
 ### net.createConnection(arguments...)
 
@@ -70,7 +80,7 @@ another server is already running on the requested port. One way of handling thi
 would be to wait a second and the try again. This can be done with
 
     server.on('error', function (e) {
-      if (e.errno == require('constants').EADDRINUSE) {
+      if (e.code == 'EADDRINUSE') {
         console.log('Address in use, retrying...');
         setTimeout(function () {
           server.close();
@@ -94,7 +104,14 @@ when the server has been bound.
 Start a server listening for connections on the given file descriptor.
 
 This file descriptor must have already had the `bind(2)` and `listen(2)` system
-calls invoked on it.
+calls invoked on it.  Additionally, it must be set non-blocking; try
+`fcntl(fd, F_SETFL, O_NONBLOCK)`.
+
+#### server.pause(msecs)
+
+Stop accepting connections for the given number of milliseconds (default is
+one second).  This could be useful for throttling new connections against
+DoS attacks or other oversubscription.
 
 #### server.close()
 
@@ -105,8 +122,9 @@ event.
 
 #### server.address()
 
-Returns the bound address of the server as seen by the operating system.
-Useful to find which port was assigned when giving getting an OS-assigned address
+Returns the bound address and port of the server as reported by the operating system.
+Useful to find which port was assigned when giving getting an OS-assigned address.
+Returns an object with two properties, e.g. `{"address":"127.0.0.1", "port":2121}`
 
 Example:
 
@@ -153,6 +171,21 @@ and passed to the user through the `'connection'` event of a server.
 
 `net.Socket` instances are EventEmitters with the following events:
 
+#### new net.Socket([options])
+
+Construct a new socket object.
+
+`options` is an object with the following defaults:
+
+    { fd: null
+      type: null
+      allowHalfOpen: false
+    }
+
+`fd` allows you to specify the existing file descriptor of socket. `type`
+specified underlying protocol. It can be `'tcp4'`, `'tcp6'`, or `'unix'`.
+About `allowHalfOpen`, refer to `createServer()` and `'end'` event.
+
 #### socket.connect(port, [host], [callback])
 #### socket.connect(path, [callback])
 
@@ -170,8 +203,27 @@ socket is established. If there is a problem connecting, the `'connect'`
 event will not be emitted, the `'error'` event will be emitted with
 the exception.
 
-The `callback` paramenter will be added as an listener for the 'connect'
+The `callback` parameter will be added as an listener for the 'connect'
 event.
+
+
+#### socket.bufferSize
+
+`net.Socket` has the property that `socket.write()` always works. This is to
+help users get up an running quickly. The computer cannot necessarily keep up
+with the amount of data that is written to a socket - the network connection simply
+might be too slow. Node will internally queue up the data written to a socket and
+send it out over the wire when it is possible. (Internally it is polling on
+the socket's file descriptor for being writable).
+
+The consequence of this internal buffering is that memory may grow. This
+property shows the number of characters currently buffered to be written.
+(Number of characters is approximately equal to the number of bytes to be
+written, but the buffer may contain strings, and the strings are lazily
+encoded, so the exact number of bytes is not known.)
+
+Users who experience large or growing `bufferSize` should attempt to
+"throttle" the data flows in their program with `pause()` and resume()`.
 
 
 #### socket.setEncoding(encoding=null)
@@ -182,7 +234,7 @@ received.
 #### socket.setSecure()
 
 This function has been removed in v0.3. It used to upgrade the connection to
-SSL/TLS. See the TLS for the new API.
+SSL/TLS. See the [TLS section](tls.html#tLS_) for the new API.
 
 
 #### socket.write(data, [encoding], [callback])
@@ -226,7 +278,7 @@ Useful to throttle back an upload.
 
 Resumes reading after a call to `pause()`.
 
-#### socket.setTimeout(timeout)
+#### socket.setTimeout(timeout, [callback])
 
 Sets the socket to timeout after `timeout` milliseconds of inactivity on
 the socket. By default `net.Socket` do not have a timeout.
@@ -236,6 +288,8 @@ event but the connection will not be severed. The user must manually `end()`
 or `destroy()` the socket.
 
 If `timeout` is 0, then the existing idle timeout is disabled.
+
+The optional `callback` parameter will be added as a one time listener for the `'timeout'` event.
 
 #### socket.setNoDelay(noDelay=true)
 
@@ -251,6 +305,11 @@ Set `initialDelay` (in milliseconds) to set the delay between the last
 data packet received and the first keepalive probe. Setting 0 for
 initialDelay will leave the value unchanged from the default
 (or previous) setting.
+
+#### socket.address()
+
+Returns the bound address and port of the socket as reported by the operating system.
+Returns an object with two properties, e.g. `{"address":"192.168.57.1", "port":62053}`
 
 #### socket.remoteAddress
 
@@ -273,7 +332,7 @@ See `connect()`.
 
 Emitted when data is received.  The argument `data` will be a `Buffer` or
 `String`.  Encoding of data is set by `socket.setEncoding()`.
-(See the section on `Readable Socket` for more information.)
+(See the [Readable Stream](streams.html#readable_Stream) section for more information.)
 
 #### Event: 'end'
 

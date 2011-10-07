@@ -103,17 +103,14 @@ function StringConcat() {
 // ECMA-262 section 15.5.4.7
 function StringIndexOf(pattern /* position */) {  // length == 1
   var subject = TO_STRING_INLINE(this);
-  var pattern = TO_STRING_INLINE(pattern);
-  var subject_len = subject.length;
-  var pattern_len = pattern.length;
+  pattern = TO_STRING_INLINE(pattern);
   var index = 0;
   if (%_ArgumentsLength() > 1) {
-    var arg1 = %_Arguments(1);  // position
-    index = TO_INTEGER(arg1);
+    index = %_Arguments(1);  // position
+    index = TO_INTEGER(index);
+    if (index < 0) index = 0;
+    if (index > subject.length) index = subject.length;
   }
-  if (index < 0) index = 0;
-  if (index > subject_len) index = subject_len;
-  if (pattern_len + index > subject_len) return -1;
   return %StringIndexOf(subject, pattern, index);
 }
 
@@ -127,7 +124,7 @@ function StringLastIndexOf(pat /* position */) {  // length == 1
   var index = subLength - patLength;
   if (%_ArgumentsLength() > 1) {
     var position = ToNumber(%_Arguments(1));
-    if (!$isNaN(position)) {
+    if (!NUMBER_IS_NAN(position)) {
       position = TO_INTEGER(position);
       if (position < 0) {
         position = 0;
@@ -405,8 +402,7 @@ function StringReplaceGlobalRegExpWithFunction(subject, regexp, replace) {
         lastMatchInfoOverride = override;
         var func_result =
             %_CallFunction(receiver, elem, match_start, subject, replace);
-        func_result = TO_STRING_INLINE(func_result); 
-        res[i] = func_result;
+        res[i] = TO_STRING_INLINE(func_result);
         match_start += elem.length;
       }
       i++;
@@ -419,8 +415,7 @@ function StringReplaceGlobalRegExpWithFunction(subject, regexp, replace) {
         // Use the apply argument as backing for global RegExp properties.
         lastMatchInfoOverride = elem;
         var func_result = replace.apply(null, elem);
-        func_result = TO_STRING_INLINE(func_result); 
-        res[i] = func_result;
+        res[i] = TO_STRING_INLINE(func_result);
       }
       i++;
     }
