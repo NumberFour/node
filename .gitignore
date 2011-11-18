@@ -9,6 +9,7 @@ test/fixtures/hello.txt
 tmp/
 node
 node_g
+output
 *.swp
 .benchmark_reports
 /.project
