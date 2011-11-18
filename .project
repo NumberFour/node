@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<projectDescription>
+	<name>node</name>
+	<comment></comment>
+	<buildSpec>
+		<buildCommand>
+			<name>org.eclipse.dltk.core.scriptbuilder</name>
+			<arguments>
+			</arguments>
+		</buildCommand>
+	</buildSpec>
+	<natures>
+		<nature>n4.ide.core.nature</nature>
+		<nature>org.eclipse.dltk.javascript.core.nature</nature>
+	</natures>
+</projectDescription>
