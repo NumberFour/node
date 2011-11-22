@@ -28,7 +28,6 @@ rm -rf $RPM_BUILD_ROOT
 %defattr(-,root,root,-)
 %{_bindir}/*
 /usr/lib/node/wafadmin/*
-/usr/lib/pkgconfig/nodejs.pc
 %{_includedir}/*
 %{_mandir}/man1/*
 %doc
