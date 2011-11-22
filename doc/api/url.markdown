@@ -9,19 +9,19 @@ string will not be in the parsed object. Examples are shown for the URL
 
 `'http://user:pass@host.com:8080/p/a/t/h?query=string#hash'`
 
-* `href`: The full URL that was originally parsed.
+* `href`: The full URL that was originally parsed. Both the protocol and host are lowercased.
 
   Example: `'http://user:pass@host.com:8080/p/a/t/h?query=string#hash'`
-* `protocol`: The request protocol.
+* `protocol`: The request protocol, lowercased.
 
   Example: `'http:'`
-* `host`: The full host portion of the URL, including port and authentication information.
+* `host`: The full lowercased host portion of the URL, including port and authentication information.
 
   Example: `'user:pass@host.com:8080'`
 * `auth`: The authentication information portion of a URL.
 
   Example: `'user:pass'`
-* `hostname`: Just the hostname portion of the host.
+* `hostname`: Just the lowercased hostname portion of the host.
 
   Example: `'host.com'`
 * `port`: The port number portion of the host.
@@ -33,6 +33,9 @@ string will not be in the parsed object. Examples are shown for the URL
 * `search`: The 'query string' portion of the URL, including the leading question mark.
 
   Example: `'?query=string'`
+* `path`: Concatenation of `pathname` and `search`.
+
+  Example: `'/p/a/t/h?query=string'`
 * `query`: Either the 'params' portion of the query string, or a querystring-parsed object.
 
   Example: `'query=string'` or `{'query':'string'}`
@@ -56,6 +59,20 @@ Pass `true` as the third argument to treat `//foo/bar` as
 ### url.format(urlObj)
 
 Take a parsed URL object, and return a formatted URL string.
+
+* `href` will be ignored.
+* `protocol`is treated the same with or without the trailing `:` (colon).
+  * The protocols `http`, `https`, `ftp`, `gopher`, `file` will be postfixed with `://` (colon-slash-slash).
+  * All other protocols `mailto`, `xmpp`, `aim`, `sftp`, `foo`, etc will be postfixed with `:` (colon)
+* `auth` will only be used if `host` is absent.
+* `hostname` will only be used if `host` is absent.
+* `port` will only be used if `host` is absent.
+* `host` will be used in place of `auth`, `hostname`, and `port`
+* `pathname` is treated the same with or without the leading `/` (slash)
+* `search` will be used in place of `query`
+* `query` (object; see `querystring`) will only be used if `search` is absent.
+* `search` is treated the same with or without the leading `?` (question mark)
+* `hash` is treated the same with or without the leading `#` (pound sign, anchor)
 
 ### url.resolve(from, to)
 

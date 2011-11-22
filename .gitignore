@@ -14,5 +14,7 @@ node_g
 SOURCES
 SPECS
 RPMS
+BUILD
+out
 /.project
 /.cproject

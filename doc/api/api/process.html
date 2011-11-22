@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="UTF-8" />
-  <title>process - Node.js v0.4.12 Manual &amp; Documentation</title>
+  <title>process - Node.js v0.6.2 Manual &amp; Documentation</title>
   <link type="image/x-icon" rel="icon" href="/favicon.ico" />
   <link type="image/x-icon" rel="shortcut icon" href="/favicon.ico" />
   <link rel="stylesheet" href="assets/style.css" type="text/css" media="all" />
@@ -11,19 +11,19 @@
 <body>
   <div id="container">
     <header>
-      <h1>Node.js v0.4.12 Manual &amp; Documentation</h1>
+      <h1>Node.js v0.6.2 Manual &amp; Documentation</h1>
       <div id="gtoc">
         <p><a href="index.html">Index</a> | <a href="all.html">View on single page</a></p>
       </div>
       <hr />
     </header>
-    <div id="toc"><h2>Table Of Contents</h2><ul><li><a href="#process">process</a><ul><li><a href="#event_exit_">Event: 'exit'</a></li><li><a href="#event_uncaughtException_">Event: 'uncaughtException'</a></li><li><a href="#signal_Events">Signal Events</a></li><li><a href="#process.stdout">process.stdout</a></li><li><a href="#process.stderr">process.stderr</a></li><li><a href="#process.stdin">process.stdin</a></li><li><a href="#process.argv">process.argv</a></li><li><a href="#process.execPath">process.execPath</a></li><li><a href="#process.chdir">process.chdir(directory)</a></li><li><a href="#process.cwd">process.cwd()</a></li><li><a href="#process.env">process.env</a></li><li><a href="#process.exit">process.exit(code=0)</a></li><li><a href="#process.getgid">process.getgid()</a></li><li><a href="#process.setgid">process.setgid(id)</a></li><li><a href="#process.getuid">process.getuid()</a></li><li><a href="#process.setuid">process.setuid(id)</a></li><li><a href="#process.version">process.version</a></li><li><a href="#process.installPrefix">process.installPrefix</a></li><li><a href="#process.kill">process.kill(pid, signal='SIGTERM')</a></li><li><a href="#process.pid">process.pid</a></li><li><a href="#process.title">process.title</a></li><li><a href="#process.platform">process.platform</a></li><li><a href="#process.memoryUsage">process.memoryUsage()</a></li><li><a href="#process.nextTick">process.nextTick(callback)</a></li><li><a href="#process.umask">process.umask([mask])</a></li></ul></li></ul><hr /></div>
+    <div id="toc"><h2>Table Of Contents</h2><ul><li><a href="#process">process</a><ul><li><a href="#event_exit_">Event: 'exit'</a></li><li><a href="#event_uncaughtException_">Event: 'uncaughtException'</a></li><li><a href="#signal_Events">Signal Events</a></li><li><a href="#process.stdout">process.stdout</a></li><li><a href="#process.stderr">process.stderr</a></li><li><a href="#process.stdin">process.stdin</a></li><li><a href="#process.argv">process.argv</a></li><li><a href="#process.execPath">process.execPath</a></li><li><a href="#process.chdir">process.chdir(directory)</a></li><li><a href="#process.cwd">process.cwd()</a></li><li><a href="#process.env">process.env</a></li><li><a href="#process.exit">process.exit(code=0)</a></li><li><a href="#process.getgid">process.getgid()</a></li><li><a href="#process.setgid">process.setgid(id)</a></li><li><a href="#process.getuid">process.getuid()</a></li><li><a href="#process.setuid">process.setuid(id)</a></li><li><a href="#process.version">process.version</a></li><li><a href="#process.versions">process.versions</a></li><li><a href="#process.installPrefix">process.installPrefix</a></li><li><a href="#process.kill">process.kill(pid, signal='SIGTERM')</a></li><li><a href="#process.pid">process.pid</a></li><li><a href="#process.title">process.title</a></li><li><a href="#process.arch">process.arch</a></li><li><a href="#process.platform">process.platform</a></li><li><a href="#process.memoryUsage">process.memoryUsage()</a></li><li><a href="#process.nextTick">process.nextTick(callback)</a></li><li><a href="#process.umask">process.umask([mask])</a></li><li><a href="#process.uptime">process.uptime()</a></li></ul></li></ul><hr /></div>
 <h2 id="process">process</h2>
 
 <p>The <code>process</code> object is a global object and can be accessed from anywhere.
 It is an instance of <code>EventEmitter</code>.</p>
 
-<h3 id="event_exit_">Event: 'exit'</h3>
+<h3 id="event_exit_">Event: 'exit' <a href="#event_exit_">#</a></h3>
 
 <p><code>function () {}</code></p>
 
@@ -41,7 +41,7 @@ timers may not be scheduled.</p>
   console.log('About to exit.');
 });</code></pre>
 
-<h3 id="event_uncaughtException_">Event: 'uncaughtException'</h3>
+<h3 id="event_uncaughtException_">Event: 'uncaughtException' <a href="#event_uncaughtException_">#</a></h3>
 
 <p><code>function (err) { }</code></p>
 
@@ -68,7 +68,7 @@ handling.  Using try / catch in your program will give you more control over
 your program's flow.  Especially for server programs that are designed to
 stay running forever, <code>uncaughtException</code> can be a useful safety mechanism.</p>
 
-<h3 id="signal_Events">Signal Events</h3>
+<h3 id="signal_Events">Signal Events <a href="#signal_Events">#</a></h3>
 
 <p><code>function () {}</code></p>
 
@@ -87,7 +87,7 @@ process.on('SIGINT', function () {
 <p>An easy way to send the <code>SIGINT</code> signal is with <code>Control-C</code> in most terminal
 programs.</p>
 
-<h3 id="process.stdout">process.stdout</h3>
+<h3 id="process.stdout">process.stdout <a href="#process.stdout">#</a></h3>
 
 <p>A <code>Writable Stream</code> to <code>stdout</code>.</p>
 
@@ -97,11 +97,21 @@ programs.</p>
   process.stdout.write(d + '\n');
 };</code></pre>
 
-<h3 id="process.stderr">process.stderr</h3>
+<p><code>process.stderr</code> and <code>process.stdout</code> are unlike other streams in Node in
+that writes to them are usually blocking.  They are blocking in the case
+that they refer to regular files or TTY file descriptors. In the case they
+refer to pipes, they are non-blocking like other streams.</p>
 
-<p>A writable stream to stderr. Writes on this stream are blocking.</p>
+<h3 id="process.stderr">process.stderr <a href="#process.stderr">#</a></h3>
 
-<h3 id="process.stdin">process.stdin</h3>
+<p>A writable stream to stderr.</p>
+
+<p><code>process.stderr</code> and <code>process.stdout</code> are unlike other streams in Node in
+that writes to them are usually blocking.  They are blocking in the case
+that they refer to regular files or TTY file descriptors. In the case they
+refer to pipes, they are non-blocking like other streams.</p>
+
+<h3 id="process.stdin">process.stdin <a href="#process.stdin">#</a></h3>
 
 <p>A <code>Readable Stream</code> for stdin. The stdin stream is paused by default, so one
 must call <code>process.stdin.resume()</code> to read from it.</p>
@@ -119,7 +129,7 @@ process.stdin.on('end', function () {
   process.stdout.write('end');
 });</code></pre>
 
-<h3 id="process.argv">process.argv</h3>
+<h3 id="process.argv">process.argv <a href="#process.argv">#</a></h3>
 
 <p>An array containing the command line arguments.  The first element will be
 'node', the second element will be the name of the JavaScript file.  The
@@ -139,7 +149,7 @@ process.argv.forEach(function (val, index, array) {
 3: two=three
 4: four</code></pre>
 
-<h3 id="process.execPath">process.execPath</h3>
+<h3 id="process.execPath">process.execPath <a href="#process.execPath">#</a></h3>
 
 <p>This is the absolute pathname of the executable that started the process.</p>
 
@@ -147,7 +157,7 @@ process.argv.forEach(function (val, index, array) {
 
 <pre><code>/usr/local/bin/node</code></pre>
 
-<h3 id="process.chdir">process.chdir(directory)</h3>
+<h3 id="process.chdir">process.chdir(directory) <a href="#process.chdir">#</a></h3>
 
 <p>Changes the current working directory of the process or throws an exception if that fails.</p>
 
@@ -160,17 +170,17 @@ catch (err) {
   console.log('chdir: ' + err);
 }</code></pre>
 
-<h3 id="process.cwd">process.cwd()</h3>
+<h3 id="process.cwd">process.cwd() <a href="#process.cwd">#</a></h3>
 
 <p>Returns the current working directory of the process.</p>
 
 <pre><code>console.log('Current directory: ' + process.cwd());</code></pre>
 
-<h3 id="process.env">process.env</h3>
+<h3 id="process.env">process.env <a href="#process.env">#</a></h3>
 
 <p>An object containing the user environment. See environ(7).</p>
 
-<h3 id="process.exit">process.exit(code=0)</h3>
+<h3 id="process.exit">process.exit(code=0) <a href="#process.exit">#</a></h3>
 
 <p>Ends the process with the specified <code>code</code>.  If omitted, exit uses the
 'success' code <code>0</code>.</p>
@@ -181,14 +191,14 @@ catch (err) {
 
 <p>The shell that executed node should see the exit code as 1.</p>
 
-<h3 id="process.getgid">process.getgid()</h3>
+<h3 id="process.getgid">process.getgid() <a href="#process.getgid">#</a></h3>
 
 <p>Gets the group identity of the process. (See getgid(2).)
 This is the numerical group id, not the group name.</p>
 
 <pre><code>console.log('Current gid: ' + process.getgid());</code></pre>
 
-<h3 id="process.setgid">process.setgid(id)</h3>
+<h3 id="process.setgid">process.setgid(id) <a href="#process.setgid">#</a></h3>
 
 <p>Sets the group identity of the process. (See setgid(2).)  This accepts either
 a numerical ID or a groupname string. If a groupname is specified, this method
@@ -203,14 +213,14 @@ catch (err) {
   console.log('Failed to set gid: ' + err);
 }</code></pre>
 
-<h3 id="process.getuid">process.getuid()</h3>
+<h3 id="process.getuid">process.getuid() <a href="#process.getuid">#</a></h3>
 
 <p>Gets the user identity of the process. (See getuid(2).)
 This is the numerical userid, not the username.</p>
 
 <pre><code>console.log('Current uid: ' + process.getuid());</code></pre>
 
-<h3 id="process.setuid">process.setuid(id)</h3>
+<h3 id="process.setuid">process.setuid(id) <a href="#process.setuid">#</a></h3>
 
 <p>Sets the user identity of the process. (See setuid(2).)  This accepts either
 a numerical ID or a username string.  If a username is specified, this method
@@ -225,19 +235,33 @@ catch (err) {
   console.log('Failed to set uid: ' + err);
 }</code></pre>
 
-<h3 id="process.version">process.version</h3>
+<h3 id="process.version">process.version <a href="#process.version">#</a></h3>
 
 <p>A compiled-in property that exposes <code>NODE_VERSION</code>.</p>
 
 <pre><code>console.log('Version: ' + process.version);</code></pre>
 
-<h3 id="process.installPrefix">process.installPrefix</h3>
+<h3 id="process.versions">process.versions <a href="#process.versions">#</a></h3>
+
+<p>A property exposing version strings of node and its dependencies.</p>
+
+<pre><code>console.log(process.versions);</code></pre>
+
+<p>Will output:</p>
+
+<pre><code>{ node: '0.4.12',
+  v8: '3.1.8.26',
+  ares: '1.7.4',
+  ev: '4.4',
+  openssl: '1.0.0e-fips' }</code></pre>
+
+<h3 id="process.installPrefix">process.installPrefix <a href="#process.installPrefix">#</a></h3>
 
 <p>A compiled-in property that exposes <code>NODE_PREFIX</code>.</p>
 
 <pre><code>console.log('Prefix: ' + process.installPrefix);</code></pre>
 
-<h3 id="process.kill">process.kill(pid, signal='SIGTERM')</h3>
+<h3 id="process.kill">process.kill(pid, signal='SIGTERM') <a href="#process.kill">#</a></h3>
 
 <p>Send a signal to a process. <code>pid</code> is the process id and <code>signal</code> is the
 string describing the signal to send.  Signal names are strings like
@@ -261,23 +285,29 @@ setTimeout(function () {
 
 process.kill(process.pid, 'SIGHUP');</code></pre>
 
-<h3 id="process.pid">process.pid</h3>
+<h3 id="process.pid">process.pid <a href="#process.pid">#</a></h3>
 
 <p>The PID of the process.</p>
 
 <pre><code>console.log('This process is pid ' + process.pid);</code></pre>
 
-<h3 id="process.title">process.title</h3>
+<h3 id="process.title">process.title <a href="#process.title">#</a></h3>
 
 <p>Getter/setter to set what is displayed in 'ps'.</p>
 
-<h3 id="process.platform">process.platform</h3>
+<h3 id="process.arch">process.arch <a href="#process.arch">#</a></h3>
+
+<p>What processor architecture you're running on: <code>'arm'</code>, <code>'ia32'</code>, or <code>'x64'</code>.</p>
+
+<pre><code>console.log('This processor architecture is ' + process.arch);</code></pre>
+
+<h3 id="process.platform">process.platform <a href="#process.platform">#</a></h3>
 
 <p>What platform you're running on. <code>'linux2'</code>, <code>'darwin'</code>, etc.</p>
 
 <pre><code>console.log('This platform is ' + process.platform);</code></pre>
 
-<h3 id="process.memoryUsage">process.memoryUsage()</h3>
+<h3 id="process.memoryUsage">process.memoryUsage() <a href="#process.memoryUsage">#</a></h3>
 
 <p>Returns an object describing the memory usage of the Node process
 measured in bytes.</p>
@@ -289,13 +319,12 @@ console.log(util.inspect(process.memoryUsage()));</code></pre>
 <p>This will generate:</p>
 
 <pre><code>{ rss: 4935680,
-  vsize: 41893888,
   heapTotal: 1826816,
   heapUsed: 650472 }</code></pre>
 
 <p><code>heapTotal</code> and <code>heapUsed</code> refer to V8's memory usage.</p>
 
-<h3 id="process.nextTick">process.nextTick(callback)</h3>
+<h3 id="process.nextTick">process.nextTick(callback) <a href="#process.nextTick">#</a></h3>
 
 <p>On the next loop around the event loop call this callback.
 This is <em>not</em> a simple alias to <code>setTimeout(fn, 0)</code>, it's much more
@@ -305,7 +334,7 @@ efficient.</p>
   console.log('nextTick callback');
 });</code></pre>
 
-<h3 id="process.umask">process.umask([mask])</h3>
+<h3 id="process.umask">process.umask([mask]) <a href="#process.umask">#</a></h3>
 
 <p>Sets or reads the process's file mode creation mask. Child processes inherit
 the mask from the parent process. Returns the old mask if <code>mask</code> argument is
@@ -316,6 +345,10 @@ given, otherwise returns the current mask.</p>
 oldmask = process.umask(newmask);
 console.log('Changed umask from: ' + oldmask.toString(8) +
             ' to ' + newmask.toString(8));</code></pre>
+
+<h3 id="process.uptime">process.uptime() <a href="#process.uptime">#</a></h3>
+
+<p>Number of seconds Node has been running.</p>
   </div>
   <script type="text/javascript" src="assets/sh_main.js"></script>
   <script type="text/javascript" src="assets/sh_javascript.min.js"></script>
